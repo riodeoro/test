@@ -3180,6 +3180,10 @@ function tabPanel(grid) {
 }
 
 function resetOverviewChart(panel) {
+  if (typeof panel._wxRowWatch === "function") {
+    try { panel._wxRowWatch(); } catch (e) {}
+  }
+  panel._wxRowWatch = null;
   if (typeof panel._wxCleanup === "function") {
     try { panel._wxCleanup(); } catch (e) {}
   } else {
@@ -3251,6 +3255,30 @@ function revealRow(row) {
   else if (seen.bottom > box.bottom) wrap.scrollTop += seen.bottom - box.bottom;
 }
 
+function watchRowVisible(panel, row) {
+  if (typeof ResizeObserver !== "function") return;
+  let raf = 0;
+  const run = () => {
+    raf = 0;
+    if (panel._wxRow !== row || !row.isConnected) return;
+    revealRow(row);
+  };
+  const obs = new ResizeObserver(() => {
+    if (raf) return;
+    raf = requestAnimationFrame(run);
+  });
+  try {
+    obs.observe(panel);
+  } catch (e) {
+    return;
+  }
+  panel._wxRowWatch = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    try { obs.disconnect(); } catch (e) {}
+  };
+}
+
 function openStationChart(panel, station, tabId) {
   if (!panel || !station) return;
   if (panel.style.display !== "none" && panel._wxStation === station) {
@@ -3308,6 +3336,7 @@ function openOverviewChart(panel, f, row) {
   panel.appendChild(head);
   panel.appendChild(body);
   if (row) {
+    watchRowVisible(panel, row);
     requestAnimationFrame(() => {
       if (panel._wxRow === row) revealRow(row);
     });
@@ -4436,6 +4465,49 @@ function restoreOpenDetail(saved) {
     ? row._wxFinding
     : { station: saved.station, tab: saved.tab };
   openOverviewChart(panel, f, row);
+}
+
+const TAB_PREFETCH_DELAY_MS = 400;
+
+let _tabWarmToken = 0;
+
+function warmTabPayloads() {
+  const fc = state.fc;
+  const hours = state.hours;
+  if (!fc) return;
+  const token = ++_tabWarmToken;
+  const queue = [];
+  for (const t of TABS) {
+    if (t.id === OVERVIEW_TAB || t.id === state.activeTab) continue;
+    const suffix = TAB_SUFFIX[t.id];
+    if (suffix) queue.push(suffix);
+  }
+  if (!queue.length) return;
+
+  const stale = () =>
+    token !== _tabWarmToken || state.fc !== fc || state.hours !== hours;
+
+  const next = () => {
+    if (stale()) return;
+    const suffix = queue.shift();
+    if (!suffix) return;
+    Promise.all([
+      loadCharts(fc, hours, suffix),
+      loadText(fc, hours, `insights_${suffix}`),
+      loadCharts(fc, hours, `insights_${suffix}`),
+    ])
+      .catch(() => null)
+      .then(() => {
+        if (stale()) return;
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(next, { timeout: 3000 });
+        } else {
+          setTimeout(next, 0);
+        }
+      });
+  };
+
+  setTimeout(next, TAB_PREFETCH_DELAY_MS);
 }
 
 async function renderTab(tabId) {
