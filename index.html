@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WX Network Alerts</title>
+<link rel="icon" href="station.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+
+<nav id="wx-nav">
+  <span class="brand">
+  <span>WX Network Alerts</span>
+</span>
+</nav>
+
+<div id="conn-error"></div>
+
+<div class="controls-wrap">
+  <div class="wx-controls-row">
+    <div class="wx-control fc">
+      <label for="al-fc-select">Fire Centre</label>
+      <select id="al-fc-select" class="wx-select"><option value="" selected disabled hidden>Select Centre…</option></select>
+    </div>
+    <div class="wx-control win">
+      <label for="al-range-select">Time Window</label>
+      <select id="al-range-select" class="wx-select">
+        <option value="24">Last 24h</option>
+        <option value="48">Last 48h</option>
+        <option value="72" selected>Last 72h</option>
+        <option value="168">Last 7 days</option>
+        <option value="336">Last 2 weeks</option>
+        <option value="720">Last 1 month</option>
+        <option value="1440">Last 2 months</option>
+        <option value="2160">Last 3 months</option>
+        <option value="4380">Last 6 months</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="main-content" id="al-main-content"></div>
+
+<div class="al-footer">
+  <span id="al-timing-diag"></span>
+  <span class="muted">  |  Updated daily</span>
+</div>
+
+<script>
+
+  window.WX_DATA_BASE = "https://pub-5f2f92f12a6b4b88aa9f4558095a9644.r2.dev";
+</script>
+<script src="app.js"></script>
+</body>
+</html>
