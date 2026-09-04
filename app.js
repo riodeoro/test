@@ -1129,6 +1129,26 @@ function fitColorbars(pd) {
   } catch (e) {}
 }
 
+const TICK_OVERHANG_PAD = 8;
+
+function settleAngledTicks(pd) {
+  if (pd._wxTickFix) return;
+  const fl = pd._fullLayout;
+  if (!fl || !fl.xaxis) return;
+  const xa = fl.xaxis;
+  if (xa.type !== "category" || !xa.tickangle) return;
+  pd._wxTickFix = true;
+  if (xa.automargin === "bottom") return;
+  const size = fl._size || {};
+  const r = Math.max(
+    (fl.margin && fl.margin.r) || 0,
+    (size.r || 0) + TICK_OVERHANG_PAD
+  );
+  try {
+    Plotly.relayout(pd, { "xaxis.automargin": "bottom", "margin.r": r });
+  } catch (e) {}
+}
+
 function fitPlot(pd) {
   if (!pd || !pd._wxDrawn || !pd._fullLayout || !pd.clientWidth) return;
   fitRowAxis(pd);
@@ -1240,6 +1260,7 @@ function graph(figDict, opts = {}) {
         .then(() => {
           mounted = true;
           plotDiv._wxDrawn = true;
+          settleAngledTicks(plotDiv);
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
             plotDiv.on("plotly_restyle", syncScorecards);
