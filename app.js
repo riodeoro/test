@@ -611,6 +611,8 @@ function panelIndexForPoint(boxes, x, y) {
   return above;
 }
 
+const TICK_OVERHANG_PX = 40;
+
 function tuneFonts(layout, panelCount) {
   layout.font = Object.assign({}, layout.font, { size: 11 });
 
@@ -628,19 +630,28 @@ function tuneFonts(layout, panelCount) {
     layout.title = t;
   }
 
+  let angled = false;
   for (const key of Object.keys(layout)) {
     if (!/^[xy]axis\d*$/.test(key)) continue;
     const ax = layout[key];
     if (!ax) continue;
     const size = (ax.tickfont && ax.tickfont.size) || 10;
     ax.tickfont = Object.assign({}, ax.tickfont, { size: Math.min(size, 9) });
-    if (panelCount <= 6) ax.automargin = true;
+    const slanted = key.charAt(0) === "x" && !!ax.tickangle;
+    if (slanted) angled = true;
+    if (panelCount <= 6) ax.automargin = slanted ? "bottom" : true;
     if (ax.title) {
       const at = typeof ax.title === "string" ? { text: ax.title } : Object.assign({}, ax.title);
       at.font = Object.assign({}, at.font, { size: 10 });
       if (key.charAt(0) === "x") at.standoff = 14;
       ax.title = at;
     }
+  }
+
+  if (angled && panelCount <= 6) {
+    const m = Object.assign({}, layout.margin);
+    m.r = Math.max(m.r || 0, TICK_OVERHANG_PX);
+    layout.margin = m;
   }
 
   if (Array.isArray(layout.annotations)) {
