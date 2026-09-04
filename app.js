@@ -1130,7 +1130,7 @@ function fitColorbars(pd) {
 }
 
 function fitPlot(pd) {
-  if (!pd || !pd._fullLayout || !pd.clientWidth) return;
+  if (!pd || !pd._wxDrawn || !pd._fullLayout || !pd.clientWidth) return;
   fitRowAxis(pd);
   fitColorbars(pd);
 }
@@ -1153,6 +1153,7 @@ function graph(figDict, opts = {}) {
   wrap._wxFit = scheduleFit;
 
   wrap._wxResize = () => {
+    if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
     if (plotDiv.isConnected && plotDiv.clientWidth) {
       try { Plotly.Plots.resize(plotDiv); } catch (e) {}
       scheduleFit();
@@ -1284,8 +1285,9 @@ function graph(figDict, opts = {}) {
   requestAnimationFrame(mount);
 
   watchResize(plotDiv, () => {
+    if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
     if (!plotDiv.clientWidth) return;
-    Plotly.Plots.resize(plotDiv);
+    try { Plotly.Plots.resize(plotDiv); } catch (e) {}
     scheduleFit();
   });
 
@@ -4435,6 +4437,7 @@ window.addEventListener("resize", () => {
 function resizePlots(node) {
   if (!node || !node.querySelectorAll) return;
   for (const pd of node.querySelectorAll(".wx-plot")) {
+    if (!pd._wxDrawn || !pd._fullLayout) continue;
     const w = pd.clientWidth;
     if (!w || pd._wxWidth === w) continue;
     pd._wxWidth = w;
