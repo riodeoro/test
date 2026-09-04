@@ -1238,6 +1238,7 @@ function graph(figDict, opts = {}) {
       Plotly.newPlot(plotDiv, prepared.data, prepared.layout, config)
         .then(() => {
           mounted = true;
+          plotDiv._wxDrawn = true;
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
             plotDiv.on("plotly_restyle", syncScorecards);
@@ -4468,8 +4469,73 @@ function restoreOpenDetail(saved) {
 }
 
 const TAB_PREFETCH_DELAY_MS = 400;
+const TAB_PREBUILD_DELAY_MS = 700;
+const TAB_PREBUILD_SETTLE_MS = 6000;
+const TAB_PREBUILD_GAP_MS = 120;
+
+const tabBuilds = new Map();
 
 let _tabWarmToken = 0;
+let _prebuildHost = null;
+
+function prebuildHost() {
+  if (_prebuildHost && _prebuildHost.isConnected) return _prebuildHost;
+  const host = el("div", "wx-prebuild");
+  host.setAttribute("aria-hidden", "true");
+  host.style.cssText =
+    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;";
+  document.body.appendChild(host);
+  _prebuildHost = host;
+  return host;
+}
+
+function plotsSettled(root, timeoutMs) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const check = () => {
+      let pending = 0;
+      for (const p of root.querySelectorAll(".wx-plot")) {
+        if (!p._wxDrawn) pending++;
+      }
+      if (!pending || performance.now() - t0 > timeoutMs) {
+        resolve();
+        return;
+      }
+      setTimeout(check, 120);
+    };
+    setTimeout(check, 120);
+  });
+}
+
+async function prebuildTab(tab, token, stale) {
+  const key = tabCacheKey(tab.id);
+  if (tabCache.has(key) || tabBuilds.has(key)) return;
+  const host = prebuildHost();
+  host.style.width = ($main.clientWidth || window.innerWidth) + "px";
+  const slot = el("div", "tab-content");
+  host.appendChild(slot);
+
+  const job = tab.build(state.fc, state.hours);
+  tabBuilds.set(key, job);
+
+  let content = null;
+  try {
+    content = await job;
+  } catch (e) {
+    content = null;
+  }
+  tabBuilds.delete(key);
+
+  if (content && !stale(token)) {
+    slot.appendChild(content);
+    await plotsSettled(slot, TAB_PREBUILD_SETTLE_MS);
+  }
+  if (content && content.parentNode === slot) {
+    slot.removeChild(content);
+    if (!stale(token) && !tabCache.has(key)) tabCache.set(key, content);
+  }
+  if (slot.parentNode === host) host.removeChild(slot);
+}
 
 function warmTabPayloads() {
   const fc = state.fc;
@@ -4479,18 +4545,41 @@ function warmTabPayloads() {
   const queue = [];
   for (const t of TABS) {
     if (t.id === OVERVIEW_TAB || t.id === state.activeTab) continue;
-    const suffix = TAB_SUFFIX[t.id];
-    if (suffix) queue.push(suffix);
+    queue.push(t);
   }
   if (!queue.length) return;
 
-  const stale = () =>
-    token !== _tabWarmToken || state.fc !== fc || state.hours !== hours;
+  const stale = (tk) =>
+    tk !== _tabWarmToken || state.fc !== fc || state.hours !== hours;
 
-  const next = () => {
-    if (stale()) return;
-    const suffix = queue.shift();
-    if (!suffix) return;
+  const idle = (fn) => {
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(fn, { timeout: 3000 });
+    } else {
+      setTimeout(fn, TAB_PREBUILD_GAP_MS);
+    }
+  };
+
+  const build = () => {
+    if (stale(token)) return;
+    const tab = queue.shift();
+    if (!tab) return;
+    prebuildTab(tab, token, stale)
+      .catch(() => null)
+      .then(() => {
+        if (!stale(token)) idle(build);
+      });
+  };
+
+  const fetchOnly = () => {
+    if (stale(token)) return;
+    const tab = queue.shift();
+    if (!tab) return;
+    const suffix = TAB_SUFFIX[tab.id];
+    if (!suffix) {
+      fetchOnly();
+      return;
+    }
     Promise.all([
       loadCharts(fc, hours, suffix),
       loadText(fc, hours, `insights_${suffix}`),
@@ -4498,16 +4587,15 @@ function warmTabPayloads() {
     ])
       .catch(() => null)
       .then(() => {
-        if (stale()) return;
-        if (typeof requestIdleCallback === "function") {
-          requestIdleCallback(next, { timeout: 3000 });
-        } else {
-          setTimeout(next, 0);
-        }
+        if (!stale(token)) idle(fetchOnly);
       });
   };
 
-  setTimeout(next, TAB_PREFETCH_DELAY_MS);
+  if (isMobile()) {
+    setTimeout(fetchOnly, TAB_PREFETCH_DELAY_MS);
+  } else {
+    setTimeout(build, TAB_PREBUILD_DELAY_MS);
+  }
 }
 
 async function renderTab(tabId) {
@@ -4545,10 +4633,17 @@ async function renderTab(tabId) {
   loading.appendChild(el("span", null, "Loading\u2026"));
   body.appendChild(loading);
 
-  const content = await tab.build(state.fc, state.hours);
+  const pending = tabBuilds.get(key);
+  const content = pending
+    ? await pending
+    : await tab.build(state.fc, state.hours);
   tabCache.set(key, content);
   body.innerHTML = "";
   body.appendChild(content);
+  requestAnimationFrame(() => {
+    resizePlots(content);
+    sizeOverviewShell();
+  });
   scheduleWarm();
   warmTabPayloads();
 }
