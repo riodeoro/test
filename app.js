@@ -4536,6 +4536,7 @@ async function renderTab(tabId) {
       sizeOverviewShell();
     });
     scheduleWarm();
+    warmTabPayloads();
     return;
   }
 
@@ -4549,6 +4550,7 @@ async function renderTab(tabId) {
   body.innerHTML = "";
   body.appendChild(content);
   scheduleWarm();
+  warmTabPayloads();
 }
 
 let runToken = 0;
