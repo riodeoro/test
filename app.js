@@ -317,6 +317,8 @@ function ensureStationFilterStyles() {
     "text-overflow:ellipsis;}",
     ".wx-stnf-opt:hover{background:#fafaf9;color:var(--text);}",
     ".wx-stnf-opt.sel{color:var(--text);font-weight:500;background:#f3f2ef;}",
+    ".wx-stnf-opt.dis{opacity:.38;cursor:default;}",
+    ".wx-stnf-opt.dis:hover{background:transparent;color:var(--text-muted);}",
     ".wx-stnf-sep{height:1px;background:var(--line);margin:4px 2px;}",
     ".wx-stnf-none{padding:6px;font-size:12px;color:var(--text-muted);}",
     "@media (max-width:768px){.wx-stnf-menu{width:210px;}",
@@ -381,7 +383,48 @@ function mergeView(layout, view) {
   return out;
 }
 
-function stationFilterControl(stations, onChange, floating) {
+const NEIGHBOUR_SHOW = "Show neighbours";
+
+const NEIGHBOUR_HIDE = "Hide neighbours";
+
+let _nbGroups = null;
+
+function neighbourKey(name) {
+  return String(name == null ? "" : name)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function warmNeighbours() {
+  if (_nbGroups) return;
+  detailModule()
+    .then((m) =>
+      typeof m.neighbourGroups === "function" ? m.neighbourGroups() : null
+    )
+    .then((map) => {
+      if (map && map.size) _nbGroups = map;
+    })
+    .catch(() => {});
+}
+
+function neighboursFor(station, pool) {
+  if (!_nbGroups || !station || !pool || !pool.length) return [];
+  const ranked = _nbGroups.get(neighbourKey(station));
+  if (!ranked || !ranked.length) return [];
+  const index = new Map();
+  for (const name of pool) {
+    const key = neighbourKey(name);
+    if (key && !index.has(key)) index.set(key, name);
+  }
+  const out = [];
+  for (const name of ranked) {
+    const hit = index.get(neighbourKey(name));
+    if (hit && out.indexOf(hit) < 0) out.push(hit);
+  }
+  return out;
+}
+
+function stationFilterControl(stations, onChange, floating, neighbours) {
   ensureStationFilterStyles();
 
   const selected = new Set();
@@ -399,6 +442,17 @@ function stationFilterControl(stations, onChange, floating) {
   search.placeholder = "Filter stations";
 
   const allOpt = el("div", "wx-stnf-opt sel", "All stations");
+
+  const nbOpt = neighbours ? el("div", "wx-stnf-opt", NEIGHBOUR_SHOW) : null;
+  let nbOn = false;
+  let nbPrev = null;
+  let nbStation = null;
+
+  const nbList = () => {
+    if (!neighbours) return [];
+    const station = neighbours.focus();
+    return station ? neighbours.resolve(station) : [];
+  };
 
   const sep = el("div", "wx-stnf-sep");
   const list = el("div", "wx-stnf-list");
@@ -418,14 +472,37 @@ function stationFilterControl(stations, onChange, floating) {
 
   const sync = () => {
     const n = selected.size;
-    btnText.textContent = n === 0
-      ? "All stations"
-      : (n === 1 ? Array.from(selected)[0] : `${n} stations`);
+    if (nbOn) {
+      btnText.textContent = n === 1 ? "1 neighbour" : `${n} neighbours`;
+    } else {
+      btnText.textContent = n === 0
+        ? "All stations"
+        : (n === 1 ? Array.from(selected)[0] : `${n} stations`);
+    }
     btn.className = "wx-stnf-btn" + (n ? " on" : "");
     allOpt.className = "wx-stnf-opt" + (n ? "" : " sel");
+    if (nbOpt) {
+      nbOpt.textContent = nbOn ? NEIGHBOUR_HIDE : NEIGHBOUR_SHOW;
+      const off = !nbOn && !nbList().length;
+      nbOpt.className =
+        "wx-stnf-opt" + (nbOn ? " sel" : "") + (off ? " dis" : "");
+    }
     for (const r of rows) {
       r.opt.className = "wx-stnf-opt" + (selected.has(r.name) ? " sel" : "");
     }
+  };
+
+  const nbCancel = () => {
+    nbOn = false;
+    nbPrev = null;
+    nbStation = null;
+  };
+
+  const nbRestore = () => {
+    const prev = nbPrev;
+    nbCancel();
+    selected.clear();
+    if (prev) for (const name of prev) selected.add(name);
   };
 
   const emit = () => {
@@ -446,6 +523,7 @@ function stationFilterControl(stations, onChange, floating) {
     open = next;
     menu.className = "wx-stnf-menu" + (open ? " open" : "");
     caret.textContent = open ? "\u25B4" : "\u25BE";
+    if (open && nbOpt) sync();
     if (open) {
       document.addEventListener("mousedown", outside, true);
       document.addEventListener("keydown", onKey, true);
@@ -462,13 +540,34 @@ function stationFilterControl(stations, onChange, floating) {
   });
 
   allOpt.addEventListener("click", () => {
-    if (!selected.size) return;
+    if (!selected.size && !nbOn) return;
+    nbCancel();
     selected.clear();
     emit();
   });
 
+  if (nbOpt) {
+    nbOpt.addEventListener("click", () => {
+      if (nbOn) {
+        nbRestore();
+        emit();
+        return;
+      }
+      const station = neighbours.focus();
+      const picks = station ? neighbours.resolve(station) : [];
+      if (!picks.length) return;
+      nbPrev = new Set(selected);
+      nbStation = station;
+      selected.clear();
+      for (const name of picks) selected.add(name);
+      nbOn = true;
+      emit();
+    });
+  }
+
   for (const r of rows) {
     r.opt.addEventListener("click", () => {
+      nbCancel();
       if (selected.has(r.name)) selected.delete(r.name);
       else selected.add(r.name);
       emit();
@@ -488,13 +587,35 @@ function stationFilterControl(stations, onChange, floating) {
 
   menu.appendChild(search);
   menu.appendChild(allOpt);
+  if (nbOpt) menu.appendChild(nbOpt);
   menu.appendChild(sep);
   menu.appendChild(list);
   wrap.appendChild(btn);
   wrap.appendChild(menu);
   wrap._wxClear = () => {
+    if (nbOn) {
+      nbRestore();
+      emit();
+      return true;
+    }
     if (!selected.size) return false;
     selected.clear();
+    emit();
+    return true;
+  };
+  wrap._wxNbRetarget = () => {
+    if (!nbOn || !neighbours) return false;
+    const station = neighbours.focus();
+    if (!station || station === nbStation) return false;
+    const picks = neighbours.resolve(station);
+    if (!picks.length) {
+      nbRestore();
+      emit();
+      return true;
+    }
+    nbStation = station;
+    selected.clear();
+    for (const name of picks) selected.add(name);
     emit();
     return true;
   };
@@ -2618,12 +2739,22 @@ function stationGrid(c, views) {
   }
 
   if (bar && names.length > 1) {
+    warmNeighbours();
     const ctl = stationFilterControl(names, (sel) => {
       selected = sel;
       apply();
-    }, false);
+    }, false, {
+      focus: () => {
+        const panel = wrap._wxPanel;
+        if (!panel || panel.style.display === "none") return null;
+        return panel._wxStation || null;
+      },
+      resolve: (station) => neighboursFor(station, names),
+    });
     wrap._wxClearFilter = () =>
       typeof ctl._wxClear === "function" ? ctl._wxClear() : false;
+    wrap._wxNeighbourSync = () =>
+      typeof ctl._wxNbRetarget === "function" ? ctl._wxNbRetarget() : false;
     bar.appendChild(ctl);
   }
 
@@ -3376,8 +3507,17 @@ function openOverviewChart(panel, f, row) {
     .then((m) => m.mount(panel, opts))
     .then(() => {
       wirePanelHover(panel);
-      if (panel._wxGrid && typeof panel._wxGrid._wxRefresh === "function") {
-        requestAnimationFrame(() => panel._wxGrid._wxRefresh());
+      const grid = panel._wxGrid;
+      if (grid) {
+        requestAnimationFrame(() => {
+          if (
+            typeof grid._wxNeighbourSync === "function" &&
+            grid._wxNeighbourSync()
+          ) {
+            return;
+          }
+          if (typeof grid._wxRefresh === "function") grid._wxRefresh();
+        });
       }
       if (panel._wxRow !== (row || null)) return;
       requestAnimationFrame(() => {
