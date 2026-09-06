@@ -64,6 +64,35 @@ export function warmEngine() {
   return _enginePromise;
 }
 
+let _neighbourPromise = null;
+let _neighbourMap = null;
+
+export function neighbourGroups() {
+  if (_neighbourMap) return Promise.resolve(_neighbourMap);
+  if (!_neighbourPromise) {
+    _neighbourPromise = warmConfig()
+      .then((rows) => {
+        const map = new Map();
+        for (const r of rows || []) {
+          if (!r || !r.station_name) continue;
+          const list = Array.isArray(r.neighbours)
+            ? r.neighbours.filter(Boolean)
+            : [];
+          if (!list.length) continue;
+          const key = normName(r.station_name);
+          if (key && !map.has(key)) map.set(key, list);
+        }
+        _neighbourMap = map;
+        return map;
+      })
+      .catch(() => {
+        _neighbourMap = new Map();
+        return _neighbourMap;
+      });
+  }
+  return _neighbourPromise;
+}
+
 function normName(s) {
   return String(s == null ? "" : s)
     .toUpperCase()
