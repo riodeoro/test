@@ -283,10 +283,17 @@ export async function loadStationConfig() {
       en === undefined || en === null
         ? true
         : String(en).trim().toUpperCase() === "TRUE";
+    const nb = upper.NEIGHBOURS;
+    const neighbours = Array.isArray(nb)
+      ? nb
+          .map((v) => String(v == null ? "" : v).trim())
+          .filter(Boolean)
+      : [];
     rows.push({
       fire_centre: String(upper.FIRE_CENTRE == null ? "" : upper.FIRE_CENTRE).trim(),
       station_name: String(upper.STATION_NAME == null ? "" : upper.STATION_NAME).trim(),
       enabled,
+      neighbours,
     });
   }
   return rows.filter((r) => r.station_name);
