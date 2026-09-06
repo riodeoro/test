@@ -447,6 +447,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
   let nbOn = false;
   let nbPrev = null;
   let nbStation = null;
+  let nbOrder = null;
 
   const nbList = () => {
     if (!neighbours) return [];
@@ -496,6 +497,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
     nbOn = false;
     nbPrev = null;
     nbStation = null;
+    nbOrder = null;
   };
 
   const nbRestore = () => {
@@ -507,7 +509,10 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
 
   const emit = () => {
     sync();
-    onChange(selected.size ? new Set(selected) : null);
+    onChange(
+      selected.size ? new Set(selected) : null,
+      nbOn && nbOrder ? nbOrder.slice() : null
+    );
   };
 
   const outside = (ev) => {
@@ -558,6 +563,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
       if (!picks.length) return;
       nbPrev = new Set(selected);
       nbStation = station;
+      nbOrder = picks.slice();
       selected.clear();
       for (const name of picks) selected.add(name);
       nbOn = true;
@@ -614,6 +620,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
       return true;
     }
     nbStation = station;
+    nbOrder = picks.slice();
     selected.clear();
     for (const name of picks) selected.add(name);
     emit();
@@ -2223,7 +2230,7 @@ function gridZoneFills(fig, cells) {
   return out;
 }
 
-function packGrid(cells, selected, stack, align) {
+function packGrid(cells, selected, stack, align, rank) {
   const wanted = selected && selected.size
     ? cells.filter((c) => selected.has(c.station))
     : cells;
@@ -2234,7 +2241,15 @@ function packGrid(cells, selected, stack, align) {
 
   if (stack) {
     order.push({ key: "0", x0: 0 });
-    byCol.set("0", use.slice().sort((a, b) => a.x0 - b.x0 || b.y0 - a.y0));
+    const seat = rank && rank.size ? (c) => {
+      const at = rank.get(c.station);
+      return at === undefined ? Infinity : at;
+    } : null;
+    byCol.set("0", use.slice().sort(
+      seat
+        ? (a, b) => seat(a) - seat(b) || a.x0 - b.x0 || b.y0 - a.y0
+        : (a, b) => a.x0 - b.x0 || b.y0 - a.y0
+    ));
   } else {
     for (const cell of use) {
       const key = cell.x0.toFixed(4);
@@ -2296,11 +2311,11 @@ function gridRowPx(fig, cells) {
   return px > 8 ? px : GRID_ROW_PX;
 }
 
-function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges) {
+function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank) {
   const stack = !!(selected && selected.size);
   const align = stack && link && link.align ? link.align : null;
   const layout = deepClone(fig.layout || {});
-  const pack = packGrid(cells, selected, stack, align);
+  const pack = packGrid(cells, selected, stack, align, rank);
   const placed = pack.placed;
 
   for (const cell of cells) {
@@ -2562,6 +2577,7 @@ function stationGrid(c, views) {
   const g = graph(fig, { height: h, noModeBar: true });
 
   let selected = null;
+  let order = null;
   let autoExpanded = false;
   wrap._wxStacked = false;
 
@@ -2630,7 +2646,7 @@ function stationGrid(c, views) {
     let next;
     try {
       next = buildGridFigure(
-        fig, cells, fills, rowPx, selected, link, useRanges
+        fig, cells, fills, rowPx, selected, link, useRanges, order
       );
     } catch (e) {
       console.warn("station grid filter failed", e);
@@ -2740,8 +2756,11 @@ function stationGrid(c, views) {
 
   if (bar && names.length > 1) {
     warmNeighbours();
-    const ctl = stationFilterControl(names, (sel) => {
+    const ctl = stationFilterControl(names, (sel, rank) => {
       selected = sel;
+      order = rank && rank.length
+        ? new Map(rank.map((name, i) => [name, i]))
+        : null;
       apply();
     }, false, {
       focus: () => {
