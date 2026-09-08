@@ -387,6 +387,15 @@ const NEIGHBOUR_SHOW = "Show neighbours";
 
 const NEIGHBOUR_HIDE = "Hide neighbours";
 
+const NEIGHBOUR_PALETTE = [
+  "#ea8a0b", "#dc2626", "#7c3aed", "#0d9488", "#16a34a",
+  "#db2777", "#a16207", "#4f46e5", "#b45309", "#0891b2",
+];
+
+const NEIGHBOUR_LINE_WIDTH = 1.4;
+
+const NEIGHBOUR_LEGEND_MARGIN = 24;
+
 let _nbGroups = null;
 
 function neighbourKey(name) {
@@ -2522,6 +2531,153 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
   return { data: data, layout: layout, yRange: yRange };
 }
 
+function overlayColor(i) {
+  return NEIGHBOUR_PALETTE[i % NEIGHBOUR_PALETTE.length];
+}
+
+function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
+  if (!rank || !rank.size || !selected || !selected.size) return null;
+
+  const use = cells.filter((cell) => selected.has(cell.station));
+  if (!use.length) return null;
+
+  const seat = (cell) => {
+    const at = rank.get(cell.station);
+    return at === undefined ? Infinity : at;
+  };
+  use.sort((a, b) => seat(a) - seat(b) || a.x0 - b.x0 || b.y0 - a.y0);
+
+  const layout = deepClone(fig.layout || {});
+  const host = use[0];
+  const ax = layout[host.xkey];
+  const ay = layout[host.ykey];
+  if (!ax || !ay) return null;
+
+  const hostX = host.id;
+  const hostY = host.ykey === "yaxis" ? "y" : "y" + host.ykey.slice(5);
+
+  for (const key of Object.keys(layout)) {
+    if (!/^xaxis\d*$/.test(key) || key === host.xkey) continue;
+    const other = layout[key];
+    const idx = key === "xaxis" ? "" : key.slice(5);
+    const anchor =
+      other && typeof other.anchor === "string" && /^y\d*$/.test(other.anchor)
+        ? other.anchor
+        : "y" + idx;
+    const ykey = "yaxis" + anchor.slice(1);
+    if (ykey !== host.ykey) delete layout[ykey];
+    delete layout[key];
+  }
+
+  const spread = !!(link && link.align && link.align[1] > link.align[0]);
+  delete ax.matches;
+  ax.visible = true;
+  ax.domain = spread ? link.align.slice() : [0, 1];
+  ay.visible = true;
+  ay.domain = [0, 1];
+
+  let range = link && link.range ? link.range.slice() : null;
+  if (!range && ranges) {
+    for (const cell of use) {
+      const hit = ranges.get(cell.station);
+      if (hit) {
+        range = [hit[0], hit[1]];
+        break;
+      }
+    }
+  }
+  if (range) {
+    ax.range = range;
+    ax.autorange = false;
+  }
+
+  const placed = new Map();
+  const slot = new Map();
+  use.forEach((cell, i) => {
+    placed.set(cell.id, {
+      cell: cell,
+      col: 0,
+      x0: ax.domain[0],
+      x1: ax.domain[1],
+      y0: 0,
+      y1: 1,
+    });
+    slot.set(cell.id, i);
+  });
+
+  const data = [];
+  for (const tr of fig.data || []) {
+    const id = tr.xaxis || "x";
+    if (!slot.has(id) || isAlertTrace(tr)) continue;
+    const i = slot.get(id);
+    const color = overlayColor(i);
+    const out = Object.assign({}, tr);
+    out.xaxis = hostX;
+    out.yaxis = hostY;
+    out.visible = true;
+    out.name = use[i].station;
+    out.showlegend = true;
+    out.line = Object.assign({}, tr.line, {
+      color: color,
+      width: NEIGHBOUR_LINE_WIDTH,
+    });
+    if (tr.marker) out.marker = Object.assign({}, tr.marker, { color: color });
+    delete out.fill;
+    delete out.fillcolor;
+    data.push(out);
+  }
+  if (!data.length) return null;
+
+  const known = new Set(cells.map((cell) => cell.station));
+  if (Array.isArray(layout.annotations)) {
+    layout.annotations = layout.annotations.filter((a) => {
+      if (!a || typeof a.text !== "string") return true;
+      return !known.has(a.text.replace(/<[^>]*>/g, "").trim());
+    });
+  }
+
+  layout.shapes = [];
+  layout.hovermode = "x unified";
+  layout.hoverlabel = Object.assign({}, layout.hoverlabel, {
+    bgcolor: "white",
+    bordercolor: "#e8e6e3",
+    align: "left",
+    font: Object.assign({ size: 11 }, (layout.hoverlabel || {}).font, {
+      color: GRID_HOVER_TEXT,
+    }),
+  });
+  layout.showlegend = true;
+  layout.legend = {
+    orientation: "h",
+    x: 0,
+    xanchor: "left",
+    y: 1,
+    yanchor: "bottom",
+    bgcolor: "rgba(255,255,255,0)",
+    font: { size: 9, color: "#57534e" },
+    tracegroupgap: 3,
+  };
+  layout.margin = Object.assign({}, layout.margin, {
+    t: Math.max(((layout.margin || {}).t) || 0, NEIGHBOUR_LEGEND_MARGIN),
+  });
+
+  const yRange = stackYRange(
+    fig,
+    placed,
+    link && link.yRange ? link.yRange : null
+  );
+  if (yRange) {
+    ay.range = yRange.slice();
+    ay.autorange = false;
+  }
+
+  delete layout.width;
+  layout.autosize = true;
+  layout.height = Math.round(rowPx + GRID_PAD_PX);
+
+  return { data: data, layout: layout, yRange: yRange };
+}
+
 function stationGrid(c, views) {
   const list = (views && views.length ? views : [{ key: "station_grid" }])
     .filter((v) => c && c[v.key]);
@@ -2643,11 +2799,19 @@ function stationGrid(c, views) {
       }
     }
     const link = filtered ? linkGeom() : null;
-    let next;
+    const overlay = filtered && !!order && order.size > 0;
+    let next = null;
     try {
-      next = buildGridFigure(
-        fig, cells, fills, rowPx, selected, link, useRanges, order
-      );
+      if (overlay) {
+        next = buildOverlayFigure(
+          fig, cells, rowPx, selected, link, useRanges, order
+        );
+      }
+      if (!next) {
+        next = buildGridFigure(
+          fig, cells, fills, rowPx, selected, link, useRanges, order
+        );
+      }
     } catch (e) {
       console.warn("station grid filter failed", e);
       return true;
