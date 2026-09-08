@@ -2011,11 +2011,20 @@ function isAlertTrace(tr) {
   return tr.mode === "markers" && !tr.hovertemplate;
 }
 
+function bandHoverBody(text) {
+  const parts = String(text).split("<br>");
+  const rest = parts[0].indexOf("<b>") === 0 ? parts.slice(1) : parts;
+  const out = rest.join("<br>").trim();
+  return out || null;
+}
+
 function unifiedBandTrace(tr) {
   if (!tr || !tr.meta || !tr.meta.band_hover) return tr;
   if (tr.hovertemplate || typeof tr.text !== "string" || !tr.text) return tr;
+  const body = bandHoverBody(tr.text);
+  if (!body) return tr;
   const out = Object.assign({}, tr);
-  out.hovertemplate = tr.text + "<extra></extra>";
+  out.hovertemplate = body + "<extra></extra>";
   out.hoveron = "points";
   delete out.hoverinfo;
   return out;
