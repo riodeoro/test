@@ -424,6 +424,7 @@ const DETAIL_FONT_COLOR = "#57534e";
 
 function applyDetailHoverStyle(layout) {
   if (!layout) return layout;
+  layout.hovermode = "x unified";
   layout.hoverlabel = {
     bgcolor: DETAIL_HOVER_BG,
     bordercolor: DETAIL_HOVER_BORDER,
@@ -1981,6 +1982,17 @@ function gridAxisStations(fig) {
   return map;
 }
 
+function cloneLayout(layout) {
+  if (!layout) return {};
+  const tpl = layout.template;
+  if (!tpl) return deepClone(layout);
+  const rest = Object.assign({}, layout);
+  delete rest.template;
+  const out = deepClone(rest);
+  out.template = tpl;
+  return out;
+}
+
 function isAlertTrace(tr) {
   if (!tr) return false;
   if (tr.meta && tr.meta.band_hover) return true;
@@ -2201,6 +2213,7 @@ const DETAIL_COL_RE = /^([A-Za-z0-9_]+)/;
 function gridColumnName(fig) {
   for (const tr of (fig && fig.data) || []) {
     if (!tr) continue;
+    if (tr.meta && tr.meta.band_hover) continue;
     if (tr.meta && typeof tr.meta.col === "string" && tr.meta.col) {
       return tr.meta.col;
     }
@@ -2410,7 +2423,7 @@ function gridRowPx(fig, cells) {
 function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank) {
   const stack = !!(selected && selected.size);
   const align = stack && link && link.align ? link.align : null;
-  const layout = deepClone(fig.layout || {});
+  const layout = cloneLayout(fig.layout);
   const pack = packGrid(cells, selected, stack, align, rank);
   const placed = pack.placed;
 
@@ -2582,7 +2595,6 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
     data.push(out);
   }
 
-  layout.hovermode = "x unified";
   applyDetailHoverStyle(layout);
 
   if (stack) {
@@ -2639,7 +2651,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
       : (a, b) => a.x0 - b.x0 || b.y0 - a.y0
   );
 
-  const layout = deepClone(fig.layout || {});
+  const layout = cloneLayout(fig.layout);
   const host = use[0];
   const ax = layout[host.xkey];
   const ay = layout[host.ykey];
@@ -2737,7 +2749,6 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   }
 
   layout.shapes = [];
-  layout.hovermode = "x unified";
   layout.hoverdistance = -1;
   applyDetailHoverStyle(layout);
   layout.showlegend = true;
@@ -2821,6 +2832,7 @@ function stationGrid(c, views) {
     fills = gridZoneFills(fig, cells);
     rowPx = gridRowPx(fig, cells);
     gridCol = gridColumnName(fig);
+    if (fig && Array.isArray(fig.data)) fig.data = fig.data.map(unifiedBandTrace);
     if (!baseSlots) {
       baseSlots = new Map();
       for (const cell of cells) {
@@ -2845,21 +2857,11 @@ function stationGrid(c, views) {
   let order = null;
   let overlay = false;
   let autoExpanded = false;
-  let settleTimer = 0;
   wrap._wxStacked = false;
 
-  const settleSize = () => {
-    if (typeof g._wxResize === "function") g._wxResize();
-    else if (typeof g._wxFit === "function") g._wxFit();
-  };
-
-  const scheduleSettle = () => {
-    requestAnimationFrame(settleSize);
-    if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      settleTimer = 0;
-      settleSize();
-    }, CARD_ANIM_MS + 60);
+  const quietly = (fn) => {
+    if (typeof wrap._wxNoAnim === "function") wrap._wxNoAnim(fn);
+    else fn();
   };
 
   const linkGeom = () => {
@@ -2961,16 +2963,13 @@ function stationGrid(c, views) {
     const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
 
     const collapsing = canExpand && !filtered && autoExpanded;
-    const applyHeight = () => {
+    quietly(() => {
       if (collapsing) {
         autoExpanded = false;
         wrap._wxExpand(false);
       }
       if (typeof wrap._wxRebase === "function") wrap._wxRebase(natural + chrome);
-    };
-
-    if (collapsing && typeof wrap._wxNoAnim === "function") wrap._wxNoAnim(applyHeight);
-    else applyHeight();
+    });
 
     if (canExpand && isOpen()) {
       delete next.layout.height;
@@ -2996,19 +2995,22 @@ function stationGrid(c, views) {
 
     if (canExpand && filtered && !isOpen()) {
       autoExpanded = true;
-      wrap._wxExpand(true, true);
+      quietly(() => wrap._wxExpand(true, true));
     } else if (typeof g._wxFit === "function") {
       g._wxFit();
     }
-    scheduleSettle();
     return true;
   };
 
+  let applyQueued = false;
+
   const apply = () => {
-    const tryApply = () => {
-      if (!render()) requestAnimationFrame(tryApply);
-    };
-    tryApply();
+    if (applyQueued) return;
+    applyQueued = true;
+    requestAnimationFrame(() => {
+      applyQueued = false;
+      if (!render()) apply();
+    });
   };
 
   wrap._wxRefresh = () => {
