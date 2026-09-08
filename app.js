@@ -402,9 +402,13 @@ const NEIGHBOUR_LINE_OPACITY = 0.9;
 
 const NEIGHBOUR_OVERLAY_ROWS = 1;
 
-const NEIGHBOUR_OVERLAY_MAX = 4;
-
 const NEIGHBOUR_LEGEND_MARGIN = 24;
+
+const NEIGHBOUR_LEGEND_COLS = 5;
+
+const NEIGHBOUR_LEGEND_ROW_PX = 14;
+
+const OVERLAY_LABEL = "Overlay";
 
 const DETAIL_HOVER_TIME = "%m-%d %H:%M";
 
@@ -1933,6 +1937,17 @@ function ensureGridToggleStyles() {
     "transition:color .12s ease,border-color .12s ease;}",
     ".wx-grid-toggle label:hover{color:var(--text,#26231f);border-color:var(--line,#e8e6e3);}",
     ".wx-grid-toggle label.on{color:var(--text,#26231f);}",
+    ".wx-grid-mode{display:none;flex:0 0 auto;align-items:center;gap:4px;",
+    "font-family:inherit;font-size:11px;font-weight:500;letter-spacing:.01em;",
+    "line-height:1.4;color:var(--text-muted,#8a857d);background:transparent;",
+    "border:none;border-radius:0;padding:0;margin:0;cursor:pointer;",
+    "transition:color .12s ease;}",
+    ".wx-grid-mode.show{display:inline-flex;}",
+    ".wx-grid-mode:hover{color:var(--text,#26231f);}",
+    ".wx-grid-mode.on{color:var(--text,#26231f);}",
+    ".wx-grid-mode .box{width:9px;height:9px;flex:0 0 auto;border-radius:2px;",
+    "border:1px solid currentColor;background:transparent;opacity:.65;}",
+    ".wx-grid-mode.on .box{background:currentColor;opacity:1;}",
     ".wx-grid-toggle input[type=\"checkbox\"]{cursor:pointer;width:12px;height:12px;margin:0;",
     "accent-color:var(--accent,#2563eb);}",
     "@media (max-width:768px){.wx-grid-toggle{min-height:0;margin:2px 0;",
@@ -2552,9 +2567,10 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
     data.push(out);
   }
 
+  layout.hovermode = "x unified";
+  applyDetailHoverStyle(layout);
+
   if (stack) {
-    layout.hovermode = "x unified";
-    applyDetailHoverStyle(layout);
     if (link && link.range && anchorKey && layout[anchorKey]) {
       layout[anchorKey].range = link.range.slice();
       layout[anchorKey].autorange = false;
@@ -2705,7 +2721,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   }
 
   layout.shapes = [];
-  layout.hovermode = "closest";
+  layout.hovermode = "x unified";
   layout.hoverdistance = -1;
   applyDetailHoverStyle(layout);
   layout.showlegend = true;
@@ -2718,9 +2734,19 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
     bgcolor: "rgba(255,255,255,0)",
     font: { size: 9, color: "#57534e" },
     tracegroupgap: 3,
+    entrywidth: 1 / NEIGHBOUR_LEGEND_COLS,
+    entrywidthmode: "fraction",
   };
+
+  const legendRows = Math.max(
+    1,
+    Math.ceil(use.length / NEIGHBOUR_LEGEND_COLS)
+  );
+  const legendPx =
+    NEIGHBOUR_LEGEND_MARGIN + (legendRows - 1) * NEIGHBOUR_LEGEND_ROW_PX;
+
   layout.margin = Object.assign({}, layout.margin, {
-    t: Math.max(((layout.margin || {}).t) || 0, NEIGHBOUR_LEGEND_MARGIN),
+    t: Math.max(((layout.margin || {}).t) || 0, legendPx),
   });
 
   const yRange = stackYRange(
@@ -2735,7 +2761,11 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
 
   delete layout.width;
   layout.autosize = true;
-  layout.height = Math.round(rowPx * NEIGHBOUR_OVERLAY_ROWS + GRID_PAD_PX);
+  layout.height = Math.round(
+    rowPx * NEIGHBOUR_OVERLAY_ROWS +
+      GRID_PAD_PX +
+      (legendRows - 1) * NEIGHBOUR_LEGEND_ROW_PX
+  );
 
   return { data: data, layout: layout, yRange: yRange };
 }
@@ -2797,6 +2827,7 @@ function stationGrid(c, views) {
 
   let selected = null;
   let order = null;
+  let overlay = false;
   let autoExpanded = false;
   wrap._wxStacked = false;
 
@@ -2863,7 +2894,7 @@ function stationGrid(c, views) {
       }
     }
     const link = filtered ? linkGeom() : null;
-    const wantOverlay = filtered && selected.size <= NEIGHBOUR_OVERLAY_MAX;
+    const wantOverlay = filtered && overlay;
     let next = null;
     try {
       if (wantOverlay) {
@@ -2985,11 +3016,38 @@ function stationGrid(c, views) {
 
   if (bar && names.length > 1) {
     warmNeighbours();
+
+    const modeBtn = el("button", "wx-grid-mode");
+    modeBtn.type = "button";
+    modeBtn.appendChild(el("span", "box"));
+    modeBtn.appendChild(el("span", null, OVERLAY_LABEL));
+    modeBtn.title = "Draw the selected stations on one shared chart";
+
+    const syncMode = () => {
+      const pick = !!(selected && selected.size);
+      modeBtn.className =
+        "wx-grid-mode" + (pick ? " show" : "") + (overlay ? " on" : "");
+      modeBtn.setAttribute("aria-pressed", overlay ? "true" : "false");
+    };
+
+    modeBtn.addEventListener("click", () => {
+      if (!selected || !selected.size) return;
+      pendingRanges = captureRanges();
+      overlay = !overlay;
+      syncMode();
+      apply();
+    });
+
+    syncMode();
+    bar.appendChild(modeBtn);
+
     const ctl = stationFilterControl(names, (sel, rank) => {
       selected = sel;
       order = rank && rank.length
         ? new Map(rank.map((name, i) => [name, i]))
         : null;
+      if (!selected || !selected.size) overlay = false;
+      syncMode();
       apply();
     }, false, {
       focus: () => {
