@@ -410,6 +410,10 @@ const NEIGHBOUR_LEGEND_ROW_PX = 14;
 
 const OVERLAY_LABEL = "Overlay";
 
+const CHECK_ICON =
+  '<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">' +
+  '<path d="M2.4 6.3 4.8 8.7 9.6 3.5"/></svg>';
+
 const DETAIL_HOVER_TIME = "%m-%d %H:%M";
 
 const DETAIL_HOVER_BG = "white";
@@ -1949,9 +1953,14 @@ function ensureGridToggleStyles() {
     ".wx-grid-mode.show{display:inline-flex;}",
     ".wx-grid-mode:hover{color:var(--text,#26231f);}",
     ".wx-grid-mode.on{color:var(--text,#26231f);}",
-    ".wx-grid-mode .box{width:9px;height:9px;flex:0 0 auto;border-radius:2px;",
-    "border:1px solid currentColor;background:transparent;opacity:.65;}",
-    ".wx-grid-mode.on .box{background:currentColor;opacity:1;}",
+    ".wx-grid-mode .box{width:11px;height:11px;flex:0 0 auto;border-radius:2px;",
+    "border:1px solid currentColor;background:transparent;opacity:.55;",
+    "box-sizing:border-box;display:inline-flex;align-items:center;",
+    "justify-content:center;}",
+    ".wx-grid-mode.on .box{opacity:1;}",
+    ".wx-grid-mode .box svg{width:9px;height:9px;fill:none;stroke:currentColor;",
+    "stroke-width:2;stroke-linecap:round;stroke-linejoin:round;opacity:0;}",
+    ".wx-grid-mode.on .box svg{opacity:1;}",
     ".wx-grid-toggle input[type=\"checkbox\"]{cursor:pointer;width:12px;height:12px;margin:0;",
     "accent-color:var(--accent,#2563eb);}",
     "@media (max-width:768px){.wx-grid-toggle{min-height:0;margin:2px 0;",
@@ -3056,7 +3065,7 @@ function stationGrid(c, views) {
 
     const modeBtn = el("button", "wx-grid-mode");
     modeBtn.type = "button";
-    modeBtn.appendChild(el("span", "box"));
+    modeBtn.appendChild(el("span", "box", CHECK_ICON));
     modeBtn.appendChild(el("span", null, OVERLAY_LABEL));
     modeBtn.title = "Draw the selected stations on one shared chart";
 
@@ -4316,16 +4325,61 @@ function wireGridAlertClicks(wrap) {
   });
 }
 
+const ZOOM_DRAG_MIN_PX = 3;
+
 function ensureGridZoomStyles() {
   if (document.getElementById("wx-gridzoom-styles")) return;
   const st = document.createElement("style");
   st.id = "wx-gridzoom-styles";
   st.textContent = [
-    ".station-grid .js-plotly-plot .zoombox{fill:rgba(38,35,31,.16)!important;}",
+    ".station-grid .js-plotly-plot.wx-zooming .zoombox{",
+    "fill:rgba(38,35,31,.16)!important;}",
     ".station-grid .js-plotly-plot .zoombox-corners{fill:var(--surface,#fff)!important;",
     "stroke:var(--text,#26231f)!important;stroke-width:1.5!important;}",
   ].join("");
   document.head.appendChild(st);
+}
+
+function wireGridZoom(wrap) {
+  const pd = wrap._wxGridPlot;
+  if (!pd || pd._wxZoomWired) return;
+  pd._wxZoomWired = true;
+  ensureGridZoomStyles();
+
+  let down = false;
+  let active = false;
+  let x0 = 0;
+  let y0 = 0;
+
+  const stop = () => {
+    down = false;
+    if (!active) return;
+    active = false;
+    pd.classList.remove("wx-zooming");
+  };
+
+  pd.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    down = true;
+    active = false;
+    x0 = ev.clientX;
+    y0 = ev.clientY;
+  }, true);
+
+  pd.addEventListener("mousemove", (ev) => {
+    if (!down || active) return;
+    if (
+      Math.abs(ev.clientX - x0) < ZOOM_DRAG_MIN_PX &&
+      Math.abs(ev.clientY - y0) < ZOOM_DRAG_MIN_PX
+    ) {
+      return;
+    }
+    active = true;
+    pd.classList.add("wx-zooming");
+  }, true);
+
+  document.addEventListener("mouseup", stop, true);
+  pd.addEventListener("mouseleave", stop, true);
 }
 
 function ensureGridSpikeStyles() {
@@ -4853,7 +4907,7 @@ function wireGridStationClicks(wrap) {
       wireGridAlertClicks(wrap);
       wireGridSpike(wrap);
       wireGridRangeSync(wrap);
-      ensureGridZoomStyles();
+      wireGridZoom(wrap);
       return;
     }
     if (tries++ < 180) requestAnimationFrame(poll);
