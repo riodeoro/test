@@ -4375,7 +4375,7 @@ function wireGridZoom(wrap) {
     y0 = ev.clientY;
   }, true);
 
-  pd.addEventListener("mousemove", (ev) => {
+  document.addEventListener("mousemove", (ev) => {
     if (!down || active) return;
     if (
       Math.abs(ev.clientX - x0) < ZOOM_DRAG_MIN_PX &&
@@ -4388,7 +4388,7 @@ function wireGridZoom(wrap) {
   }, true);
 
   document.addEventListener("mouseup", stop, true);
-  pd.addEventListener("mouseleave", stop, true);
+  window.addEventListener("blur", stop);
 }
 
 function ensureGridSpikeStyles() {
