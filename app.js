@@ -392,9 +392,23 @@ const NEIGHBOUR_PALETTE = [
   "#db2777", "#a16207", "#4f46e5", "#b45309", "#0891b2",
 ];
 
-const NEIGHBOUR_LINE_WIDTH = 1.4;
+const NEIGHBOUR_DASH = [
+  "solid", "dot", "dash", "longdash", "dashdot", "longdashdot",
+];
+
+const NEIGHBOUR_LINE_WIDTH = 1.3;
+
+const NEIGHBOUR_LINE_OPACITY = 0.9;
+
+const NEIGHBOUR_OVERLAY_ROWS = 1;
 
 const NEIGHBOUR_LEGEND_MARGIN = 24;
+
+const NEIGHBOUR_HOVER_TIME = "%m-%d %H:%M";
+
+const NEIGHBOUR_HOVER_TEXT = "#26231f";
+
+const NEIGHBOUR_HOVER_Y_RE = /%\{y[^}]*\}/;
 
 let _nbGroups = null;
 
@@ -2535,6 +2549,16 @@ function overlayColor(i) {
   return NEIGHBOUR_PALETTE[i % NEIGHBOUR_PALETTE.length];
 }
 
+function overlayDash(i) {
+  return NEIGHBOUR_DASH[i % NEIGHBOUR_DASH.length];
+}
+
+function overlayHover(tr, station) {
+  const src = typeof tr.hovertemplate === "string" ? tr.hovertemplate : "";
+  const m = NEIGHBOUR_HOVER_Y_RE.exec(src);
+  return station + ": " + (m ? m[0] : "%{y}") + "<extra></extra>";
+}
+
 function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   if (!rank || !rank.size || !selected || !selected.size) return null;
 
@@ -2605,28 +2629,36 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
     slot.set(cell.id, i);
   });
 
-  const data = [];
+  const built = [];
   for (const tr of fig.data || []) {
     const id = tr.xaxis || "x";
     if (!slot.has(id) || isAlertTrace(tr)) continue;
     const i = slot.get(id);
+    const station = use[i].station;
     const color = overlayColor(i);
     const out = Object.assign({}, tr);
     out.xaxis = hostX;
     out.yaxis = hostY;
     out.visible = true;
-    out.name = use[i].station;
+    out.name = station;
     out.showlegend = true;
+    out.legendrank = i;
+    out.opacity = NEIGHBOUR_LINE_OPACITY;
     out.line = Object.assign({}, tr.line, {
       color: color,
       width: NEIGHBOUR_LINE_WIDTH,
+      dash: overlayDash(i),
     });
     if (tr.marker) out.marker = Object.assign({}, tr.marker, { color: color });
+    out.hovertemplate = overlayHover(tr, station);
     delete out.fill;
     delete out.fillcolor;
-    data.push(out);
+    built.push({ rank: i, trace: out });
   }
-  if (!data.length) return null;
+  if (!built.length) return null;
+
+  built.sort((a, b) => b.rank - a.rank);
+  const data = built.map((b) => b.trace);
 
   const known = new Set(cells.map((cell) => cell.station));
   if (Array.isArray(layout.annotations)) {
@@ -2638,14 +2670,17 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
 
   layout.shapes = [];
   layout.hovermode = "x unified";
-  layout.hoverlabel = Object.assign({}, layout.hoverlabel, {
+  layout.hoverlabel = {
     bgcolor: "white",
     bordercolor: "#e8e6e3",
+    font: { color: NEIGHBOUR_HOVER_TEXT },
     align: "left",
-    font: Object.assign({ size: 11 }, (layout.hoverlabel || {}).font, {
-      color: GRID_HOVER_TEXT,
-    }),
+  };
+  layout.font = Object.assign({}, layout.font, {
+    size: 11,
+    color: "#57534e",
   });
+  ax.hoverformat = NEIGHBOUR_HOVER_TIME;
   layout.showlegend = true;
   layout.legend = {
     orientation: "h",
@@ -2673,7 +2708,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
 
   delete layout.width;
   layout.autosize = true;
-  layout.height = Math.round(rowPx + GRID_PAD_PX);
+  layout.height = Math.round(rowPx * NEIGHBOUR_OVERLAY_ROWS + GRID_PAD_PX);
 
   return { data: data, layout: layout, yRange: yRange };
 }
