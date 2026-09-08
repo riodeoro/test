@@ -1364,6 +1364,7 @@ function graph(figDict, opts = {}) {
   wrap._wxFit = scheduleFit;
 
   wrap._wxResize = () => {
+    if (wrap._wxHold) return;
     if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
     if (plotDiv.isConnected && plotDiv.clientWidth) {
       try { Plotly.Plots.resize(plotDiv); } catch (e) {}
@@ -1679,11 +1680,12 @@ function makeCardExpandable(c, child) {
     plotDiv.style.transition = "";
     plotDiv.style.transform = "";
     plotDiv.style.transformOrigin = "";
+    if (plotDiv.layout) {
+      delete plotDiv.layout.width;
+      delete plotDiv.layout.height;
+    }
+    if (graphWrap && graphWrap._wxHold) return;
     try {
-      if (plotDiv.layout) {
-        delete plotDiv.layout.width;
-        delete plotDiv.layout.height;
-      }
       Plotly.relayout(plotDiv, { autosize: true });
     } catch (e) {}
     resize();
@@ -2983,54 +2985,59 @@ function stationGrid(c, views) {
     const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
 
     const collapsing = canExpand && !filtered && autoExpanded;
-    quietly(() => {
-      if (collapsing) {
-        autoExpanded = false;
-        wrap._wxExpand(false);
-      }
-      if (typeof wrap._wxRebase === "function") wrap._wxRebase(natural + chrome);
-    });
 
-    if (canExpand && isOpen()) {
-      delete next.layout.height;
-      next.layout.autosize = true;
-    } else {
-      pd.style.height = natural + "px";
-    }
-
+    g._wxHold = true;
     try {
-      Plotly.react(pd, next.data, next.layout, g._wxConfig);
-    } catch (e) {
-      console.warn("station grid redraw failed", e);
-      return true;
-    }
+      quietly(() => {
+        if (collapsing) {
+          autoExpanded = false;
+          wrap._wxExpand(false);
+        }
+        if (typeof wrap._wxRebase === "function") wrap._wxRebase(natural + chrome);
+      });
 
-    if (link && link.yRange && next.yRange) {
-      const dpd = panelPlot(wrap._wxPanel);
-      if (dpd) {
-        wrap._wxYPushed = true;
-        pushRange(dpd, "yaxis", next.yRange);
+      if (canExpand && isOpen()) {
+        delete next.layout.height;
+        next.layout.autosize = true;
+      } else {
+        pd.style.height = natural + "px";
       }
+
+      try {
+        Plotly.react(pd, next.data, next.layout, g._wxConfig);
+      } catch (e) {
+        console.warn("station grid redraw failed", e);
+        return true;
+      }
+
+      if (link && link.yRange && next.yRange) {
+        const dpd = panelPlot(wrap._wxPanel);
+        if (dpd) {
+          wrap._wxYPushed = true;
+          pushRange(dpd, "yaxis", next.yRange);
+        }
+      }
+
+      if (canExpand && filtered && !isOpen()) {
+        autoExpanded = true;
+        quietly(() => wrap._wxExpand(true, true));
+      }
+    } finally {
+      g._wxHold = false;
     }
 
-    if (canExpand && filtered && !isOpen()) {
-      autoExpanded = true;
-      quietly(() => wrap._wxExpand(true, true));
+    const fl = pd._fullLayout;
+    const want = Math.round(pd.clientHeight || 0);
+    if (fl && want && Math.abs(Math.round(fl.height || 0) - want) > 1) {
+      if (typeof g._wxResize === "function") g._wxResize();
     } else if (typeof g._wxFit === "function") {
       g._wxFit();
     }
     return true;
   };
 
-  let applyQueued = false;
-
   const apply = () => {
-    if (applyQueued) return;
-    applyQueued = true;
-    requestAnimationFrame(() => {
-      applyQueued = false;
-      if (!render()) apply();
-    });
+    if (!render()) requestAnimationFrame(apply);
   };
 
   wrap._wxRefresh = () => {
