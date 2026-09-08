@@ -406,11 +406,37 @@ const NEIGHBOUR_OVERLAY_MAX = 4;
 
 const NEIGHBOUR_LEGEND_MARGIN = 24;
 
-const NEIGHBOUR_HOVER_TIME = "%m-%d %H:%M";
+const DETAIL_HOVER_TIME = "%m-%d %H:%M";
 
-const NEIGHBOUR_HOVER_TEXT = "#26231f";
+const DETAIL_HOVER_BG = "white";
 
-const NEIGHBOUR_HOVER_Y_RE = /%\{y[^}]*\}/;
+const DETAIL_HOVER_BORDER = "#e8e6e3";
+
+const DETAIL_HOVER_TEXT = "#26231f";
+
+const DETAIL_FONT_SIZE = 11;
+
+const DETAIL_FONT_COLOR = "#57534e";
+
+function applyDetailHoverStyle(layout) {
+  if (!layout) return layout;
+  layout.hoverlabel = {
+    bgcolor: DETAIL_HOVER_BG,
+    bordercolor: DETAIL_HOVER_BORDER,
+    font: { color: DETAIL_HOVER_TEXT },
+    align: "left",
+  };
+  layout.font = Object.assign({}, layout.font, {
+    size: DETAIL_FONT_SIZE,
+    color: DETAIL_FONT_COLOR,
+  });
+  for (const key of Object.keys(layout)) {
+    if (!/^xaxis\d*$/.test(key)) continue;
+    const ax = layout[key];
+    if (ax) ax.hoverformat = DETAIL_HOVER_TIME;
+  }
+  return layout;
+}
 
 let _nbGroups = null;
 
@@ -1915,15 +1941,27 @@ function ensureGridToggleStyles() {
   document.head.appendChild(st);
 }
 
+const GRID_STATION_RE = /<b>(.*?)<\/b>/;
+
+function gridTraceStation(tr) {
+  if (!tr) return null;
+  if (tr.meta && typeof tr.meta.station === "string") {
+    const name = tr.meta.station.trim();
+    if (name) return name;
+  }
+  const ht = tr.hovertemplate;
+  if (typeof ht !== "string") return null;
+  const m = GRID_STATION_RE.exec(ht);
+  return m ? m[1].trim() : null;
+}
+
 function gridAxisStations(fig) {
   const map = new Map();
   for (const tr of (fig && fig.data) || []) {
-    const ht = tr && tr.hovertemplate;
-    if (typeof ht !== "string") continue;
-    const m = /^<b>(.*?)<\/b>/.exec(ht);
-    if (!m) continue;
-    const id = tr.xaxis || "x";
-    if (!map.has(id)) map.set(id, m[1].trim());
+    const id = (tr && tr.xaxis) || "x";
+    if (map.has(id)) continue;
+    const name = gridTraceStation(tr);
+    if (name) map.set(id, name);
   }
   return map;
 }
@@ -2126,14 +2164,17 @@ const GRID_PAD_PX = 40;
 const GRID_ZONE_PAD_Y = 0.005;
 const GRID_ZONE_EDGE_LEFT = 0.02;
 const GRID_ZONE_EDGE_RIGHT = 0.01;
-const GRID_HOVER_TEXT = "#26231f";
 const GRID_Y_PAD = 0.05;
-const GRID_COL_RE = /<\/b><br>([A-Za-z0-9_]+):/;
+const GRID_COL_RE = /<\/b><br>([A-Za-z0-9_]+)/;
 const DETAIL_COL_RE = /^([A-Za-z0-9_]+)/;
 
 function gridColumnName(fig) {
   for (const tr of (fig && fig.data) || []) {
-    const ht = tr && tr.hovertemplate;
+    if (!tr) continue;
+    if (tr.meta && typeof tr.meta.col === "string" && tr.meta.col) {
+      return tr.meta.col;
+    }
+    const ht = tr.hovertemplate;
     if (typeof ht !== "string") continue;
     const m = GRID_COL_RE.exec(ht);
     if (m) return m[1];
@@ -2513,14 +2554,7 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
 
   if (stack) {
     layout.hovermode = "x unified";
-    layout.hoverlabel = Object.assign({}, layout.hoverlabel, {
-      bgcolor: "white",
-      bordercolor: "#e8e6e3",
-      align: "left",
-      font: Object.assign({ size: 11 }, (layout.hoverlabel || {}).font, {
-        color: GRID_HOVER_TEXT,
-      }),
-    });
+    applyDetailHoverStyle(layout);
     if (link && link.range && anchorKey && layout[anchorKey]) {
       layout[anchorKey].range = link.range.slice();
       layout[anchorKey].autorange = false;
@@ -2553,16 +2587,6 @@ function overlayColor(i) {
 
 function overlayDash(i) {
   return NEIGHBOUR_DASH[i % NEIGHBOUR_DASH.length];
-}
-
-function overlayHover(tr, station) {
-  const src = typeof tr.hovertemplate === "string" ? tr.hovertemplate : "";
-  const m = NEIGHBOUR_HOVER_Y_RE.exec(src);
-  return (
-    "%{x|" + NEIGHBOUR_HOVER_TIME + "}<br>" +
-    station + ": " + (m ? m[0] : "%{y}") +
-    "<extra></extra>"
-  );
 }
 
 function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
@@ -2663,7 +2687,6 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
       dash: overlayDash(i),
     });
     if (tr.marker) out.marker = Object.assign({}, tr.marker, { color: color });
-    out.hovertemplate = overlayHover(tr, station);
     delete out.fill;
     delete out.fillcolor;
     built.push({ rank: i, trace: out });
@@ -2684,17 +2707,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   layout.shapes = [];
   layout.hovermode = "closest";
   layout.hoverdistance = -1;
-  layout.hoverlabel = {
-    bgcolor: "white",
-    bordercolor: "#e8e6e3",
-    font: { color: NEIGHBOUR_HOVER_TEXT },
-    align: "left",
-  };
-  layout.font = Object.assign({}, layout.font, {
-    size: 11,
-    color: "#57534e",
-  });
-  ax.hoverformat = NEIGHBOUR_HOVER_TIME;
+  applyDetailHoverStyle(layout);
   layout.showlegend = true;
   layout.legend = {
     orientation: "h",
@@ -2752,6 +2765,7 @@ function stationGrid(c, views) {
 
   const useFigure = (key) => {
     fig = c[key];
+    applyDetailHoverStyle(fig && fig.layout);
     captureStationAnnotations(fig, wrap._wxStations);
     wrap._wxAxisStations.clear();
     for (const [id, name] of gridAxisStations(fig)) {
