@@ -2867,7 +2867,6 @@ function stationGrid(c, views) {
       console.warn("station grid filter failed", e);
       return true;
     }
-    wrap._wxOverlay = overlay && !!next.yRange !== null && overlay;
     if (isMobile()) {
       try {
         next = buildMobileFigure(next, { height: next.layout.height });
