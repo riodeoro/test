@@ -402,6 +402,8 @@ const NEIGHBOUR_LINE_OPACITY = 0.9;
 
 const NEIGHBOUR_OVERLAY_ROWS = 1;
 
+const NEIGHBOUR_OVERLAY_MAX = 4;
+
 const NEIGHBOUR_LEGEND_MARGIN = 24;
 
 const NEIGHBOUR_HOVER_TIME = "%m-%d %H:%M";
@@ -2556,20 +2558,31 @@ function overlayDash(i) {
 function overlayHover(tr, station) {
   const src = typeof tr.hovertemplate === "string" ? tr.hovertemplate : "";
   const m = NEIGHBOUR_HOVER_Y_RE.exec(src);
-  return station + ": " + (m ? m[0] : "%{y}") + "<extra></extra>";
+  return (
+    "%{x|" + NEIGHBOUR_HOVER_TIME + "}<br>" +
+    station + ": " + (m ? m[0] : "%{y}") +
+    "<extra></extra>"
+  );
 }
 
 function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
-  if (!rank || !rank.size || !selected || !selected.size) return null;
+  if (!selected || !selected.size) return null;
 
   const use = cells.filter((cell) => selected.has(cell.station));
   if (!use.length) return null;
 
-  const seat = (cell) => {
-    const at = rank.get(cell.station);
-    return at === undefined ? Infinity : at;
-  };
-  use.sort((a, b) => seat(a) - seat(b) || a.x0 - b.x0 || b.y0 - a.y0);
+  const seat =
+    rank && rank.size
+      ? (cell) => {
+          const at = rank.get(cell.station);
+          return at === undefined ? Infinity : at;
+        }
+      : null;
+  use.sort(
+    seat
+      ? (a, b) => seat(a) - seat(b) || a.x0 - b.x0 || b.y0 - a.y0
+      : (a, b) => a.x0 - b.x0 || b.y0 - a.y0
+  );
 
   const layout = deepClone(fig.layout || {});
   const host = use[0];
@@ -2669,7 +2682,8 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   }
 
   layout.shapes = [];
-  layout.hovermode = "x unified";
+  layout.hovermode = "closest";
+  layout.hoverdistance = -1;
   layout.hoverlabel = {
     bgcolor: "white",
     bordercolor: "#e8e6e3",
@@ -2820,6 +2834,7 @@ function stationGrid(c, views) {
 
     const filtered = !!(selected && selected.size);
     wrap._wxStacked = filtered;
+    wrap._wxOverlay = false;
     if (!filtered) {
       if (typeof wrap._wxSpikeOff === "function") wrap._wxSpikeOff();
       const open = panelPlot(wrap._wxPanel);
@@ -2834,14 +2849,15 @@ function stationGrid(c, views) {
       }
     }
     const link = filtered ? linkGeom() : null;
-    const overlay = filtered && !!order && order.size > 0;
+    const wantOverlay = filtered && selected.size <= NEIGHBOUR_OVERLAY_MAX;
     let next = null;
     try {
-      if (overlay) {
+      if (wantOverlay) {
         next = buildOverlayFigure(
           fig, cells, rowPx, selected, link, useRanges, order
         );
       }
+      wrap._wxOverlay = !!next;
       if (!next) {
         next = buildGridFigure(
           fig, cells, fills, rowPx, selected, link, useRanges, order
@@ -2851,6 +2867,7 @@ function stationGrid(c, views) {
       console.warn("station grid filter failed", e);
       return true;
     }
+    wrap._wxOverlay = overlay && !!next.yRange !== null && overlay;
     if (isMobile()) {
       try {
         next = buildMobileFigure(next, { height: next.layout.height });
@@ -4351,6 +4368,7 @@ function gridHoverAt(wrap, station, xval) {
   }
   if (!xa) return;
   if (typeof wrap._wxSpikeAt === "function") wrap._wxSpikeAt(xa, xval);
+  if (wrap._wxOverlay) return;
   const ya = anchoredYAxis(fl, xa);
   if (ya && ya._id) pushHover(pd, xval, xa._id + ya._id);
 }
