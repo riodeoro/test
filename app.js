@@ -601,6 +601,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
   });
 
   allOpt.addEventListener("click", () => {
+    setOpen(false);
     if (!selected.size && !nbOn) return;
     nbCancel();
     selected.clear();
@@ -610,6 +611,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
   if (nbOpt) {
     nbOpt.addEventListener("click", () => {
       if (nbOn) {
+        setOpen(false);
         nbRestore();
         emit();
         return;
@@ -617,6 +619,7 @@ function stationFilterControl(stations, onChange, floating, neighbours) {
       const station = neighbours.focus();
       const picks = station ? neighbours.resolve(station) : [];
       if (!picks.length) return;
+      setOpen(false);
       nbPrev = new Set(selected);
       nbStation = station;
       nbOrder = picks.slice();
@@ -4313,6 +4316,18 @@ function wireGridAlertClicks(wrap) {
   });
 }
 
+function ensureGridZoomStyles() {
+  if (document.getElementById("wx-gridzoom-styles")) return;
+  const st = document.createElement("style");
+  st.id = "wx-gridzoom-styles";
+  st.textContent = [
+    ".station-grid .js-plotly-plot .zoombox{fill:rgba(38,35,31,.16)!important;}",
+    ".station-grid .js-plotly-plot .zoombox-corners{fill:var(--surface,#fff)!important;",
+    "stroke:var(--text,#26231f)!important;stroke-width:1.5!important;}",
+  ].join("");
+  document.head.appendChild(st);
+}
+
 function ensureGridSpikeStyles() {
   if (document.getElementById("wx-gridspike-styles")) return;
   const st = document.createElement("style");
@@ -4838,6 +4853,7 @@ function wireGridStationClicks(wrap) {
       wireGridAlertClicks(wrap);
       wireGridSpike(wrap);
       wireGridRangeSync(wrap);
+      ensureGridZoomStyles();
       return;
     }
     if (tries++ < 180) requestAnimationFrame(poll);
