@@ -1987,6 +1987,21 @@ function isAlertTrace(tr) {
   return tr.mode === "markers" && !tr.hovertemplate;
 }
 
+function unifiedBandTrace(tr) {
+  if (!tr || !tr.meta || !tr.meta.band_hover) return tr;
+  if (tr.hovertemplate || typeof tr.text !== "string" || !tr.text) return tr;
+  const out = Object.assign({}, tr);
+  out.hovertemplate = tr.text + "<extra></extra>";
+  out.hoveron = "points";
+  delete out.hoverinfo;
+  return out;
+}
+
+function overlayHoverTemplate(ht) {
+  if (typeof ht !== "string") return ht;
+  return ht.replace(/<br>%\{x(\|[^}]*)?\}/g, "");
+}
+
 function gridStationNames(fig) {
   const anns = (fig && fig.layout && fig.layout.annotations) || [];
   const names = [];
@@ -2562,7 +2577,7 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
   for (const tr of fig.data || []) {
     const on = placed.has(tr.xaxis || "x");
     if (stack && !on) continue;
-    const out = Object.assign({}, tr);
+    const out = Object.assign({}, unifiedBandTrace(tr));
     out.visible = on ? true : false;
     data.push(out);
   }
@@ -2697,6 +2712,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
     out.showlegend = true;
     out.legendrank = i;
     out.opacity = NEIGHBOUR_LINE_OPACITY;
+    if (tr.hovertemplate) out.hovertemplate = overlayHoverTemplate(tr.hovertemplate);
     out.line = Object.assign({}, tr.line, {
       color: color,
       width: NEIGHBOUR_LINE_WIDTH,
@@ -2829,7 +2845,22 @@ function stationGrid(c, views) {
   let order = null;
   let overlay = false;
   let autoExpanded = false;
+  let settleTimer = 0;
   wrap._wxStacked = false;
+
+  const settleSize = () => {
+    if (typeof g._wxResize === "function") g._wxResize();
+    else if (typeof g._wxFit === "function") g._wxFit();
+  };
+
+  const scheduleSettle = () => {
+    requestAnimationFrame(settleSize);
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = 0;
+      settleSize();
+    }, CARD_ANIM_MS + 60);
+  };
 
   const linkGeom = () => {
     const pd = g._wxPlotDiv;
@@ -2969,6 +3000,7 @@ function stationGrid(c, views) {
     } else if (typeof g._wxFit === "function") {
       g._wxFit();
     }
+    scheduleSettle();
     return true;
   };
 
