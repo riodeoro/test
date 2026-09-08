@@ -2770,7 +2770,6 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   }
 
   layout.shapes = [];
-  layout.hoverdistance = -1;
   applyDetailHoverStyle(layout);
   layout.showlegend = true;
   layout.legend = {
@@ -4355,28 +4354,12 @@ function wireGridZoom(wrap) {
   pd._wxZoomWired = true;
   ensureGridZoomStyles();
 
-  let down = false;
   let active = false;
   let x0 = 0;
   let y0 = 0;
 
-  const stop = () => {
-    down = false;
-    if (!active) return;
-    active = false;
-    pd.classList.remove("wx-zooming");
-  };
-
-  pd.addEventListener("mousedown", (ev) => {
-    if (ev.button !== 0) return;
-    down = true;
-    active = false;
-    x0 = ev.clientX;
-    y0 = ev.clientY;
-  }, true);
-
-  document.addEventListener("mousemove", (ev) => {
-    if (!down || active) return;
+  const onMove = (ev) => {
+    if (active) return;
     if (
       Math.abs(ev.clientX - x0) < ZOOM_DRAG_MIN_PX &&
       Math.abs(ev.clientY - y0) < ZOOM_DRAG_MIN_PX
@@ -4385,10 +4368,26 @@ function wireGridZoom(wrap) {
     }
     active = true;
     pd.classList.add("wx-zooming");
-  }, true);
+  };
 
-  document.addEventListener("mouseup", stop, true);
-  window.addEventListener("blur", stop);
+  const stop = () => {
+    document.removeEventListener("mousemove", onMove, true);
+    document.removeEventListener("mouseup", stop, true);
+    window.removeEventListener("blur", stop);
+    if (!active) return;
+    active = false;
+    pd.classList.remove("wx-zooming");
+  };
+
+  pd.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    active = false;
+    x0 = ev.clientX;
+    y0 = ev.clientY;
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseup", stop, true);
+    window.addEventListener("blur", stop);
+  }, true);
 }
 
 function ensureGridSpikeStyles() {
@@ -4433,7 +4432,7 @@ function hoverAxis(pd, pt) {
   return fullXAxis(fl, (pt.data && pt.data.xaxis) || "x");
 }
 
-function gridSpikeSpan(pd, xa, xval) {
+function gridSpikeVertical(pd, xa) {
   const fl = pd && pd._fullLayout;
   if (!fl || !xa || typeof xa._offset !== "number") return null;
 
@@ -4459,14 +4458,7 @@ function gridSpikeSpan(pd, xa, xval) {
     bottom = ya._offset + ya._length;
   }
 
-  let px;
-  try {
-    px = xa.c2p(xval);
-  } catch (e) {
-    return null;
-  }
-  if (!isFinite(px)) return null;
-  return { x: xa._offset + px, top: top, height: bottom - top };
+  return { top: top, height: bottom - top };
 }
 
 const HOVER_ECHO_MS = 120;
@@ -4796,6 +4788,11 @@ function wireGridSpike(wrap) {
   host.appendChild(line);
 
   let timer = 0;
+  let raf = 0;
+  let pending = null;
+  let offsets = null;
+  const spans = new Map();
+
   const cancel = () => {
     if (timer) {
       clearTimeout(timer);
@@ -4803,23 +4800,67 @@ function wireGridSpike(wrap) {
     }
   };
 
+  const invalidate = () => {
+    offsets = null;
+    spans.clear();
+  };
+
+  const originOf = () => {
+    if (offsets) return offsets;
+    const base = pd.getBoundingClientRect();
+    const box = host.getBoundingClientRect();
+    offsets = { x: base.left - box.left, y: base.top - box.top };
+    return offsets;
+  };
+
+  const spanOf = (xa) => {
+    const key = (xa && xa._id) || "x";
+    if (spans.has(key)) return spans.get(key);
+    const span = gridSpikeVertical(pd, xa);
+    spans.set(key, span);
+    return span;
+  };
+
   const hide = () => {
     cancel();
+    pending = null;
+    if (raf) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
     line.className = "wx-grid-spike";
   };
 
+  const paint = () => {
+    raf = 0;
+    const job = pending;
+    pending = null;
+    if (!job) return;
+    const span = spanOf(job.xa);
+    let px = NaN;
+    try {
+      px = job.xa.c2p(job.xval);
+    } catch (e) {
+      void e;
+    }
+    if (!span || !isFinite(px)) {
+      line.className = "wx-grid-spike";
+      return;
+    }
+    const origin = originOf();
+    line.style.left = Math.round(origin.x + job.xa._offset + px) + "px";
+    line.style.top = Math.round(origin.y + span.top) + "px";
+    line.style.height = Math.round(span.height) + "px";
+    line.className = "wx-grid-spike on";
+  };
+
   const place = (xa, xval) => {
-    const span = gridSpikeSpan(pd, xa, xval);
-    if (!span) {
+    if (!xa || typeof xa._offset !== "number") {
       hide();
       return false;
     }
-    const base = pd.getBoundingClientRect();
-    const box = host.getBoundingClientRect();
-    line.style.left = Math.round(base.left - box.left + span.x) + "px";
-    line.style.top = Math.round(base.top - box.top + span.top) + "px";
-    line.style.height = Math.round(span.height) + "px";
-    line.className = "wx-grid-spike on";
+    pending = { xa: xa, xval: xval };
+    if (!raf) raf = requestAnimationFrame(paint);
     return true;
   };
 
@@ -4852,7 +4893,11 @@ function wireGridSpike(wrap) {
       if (dpd) dropHover(dpd);
     }, HOVER_HOLD_MS);
   });
-  pd.on("plotly_relayout", hide);
+  pd.on("plotly_relayout", () => {
+    invalidate();
+    hide();
+  });
+  pd.on("plotly_afterplot", invalidate);
   pd.addEventListener("mouseleave", hide);
 }
 
