@@ -404,8 +404,6 @@ const NEIGHBOUR_OVERLAY_ROWS = 1;
 
 const NEIGHBOUR_LEGEND_MARGIN = 24;
 
-const GRID_VIEW_PANES = 3;
-
 const NEIGHBOUR_LEGEND_COLS = 5;
 
 const NEIGHBOUR_LEGEND_ROW_PX = 14;
@@ -1610,23 +1608,12 @@ function makeCardExpandable(c, child) {
   ensureCardExpandStyles();
   c.classList.add("wx-expandable");
 
-  const activeGraph = () =>
-    (typeof c._wxActiveGraph === "function" ? c._wxActiveGraph() : null) || graphWrap;
-  const activePlot = () => {
-    const gw = activeGraph();
-    return (gw && (gw._wxPlotDiv || gw.querySelector(".wx-plot"))) || null;
-  };
-  const resize = () => {
-    const gw = activeGraph();
-    if (gw && typeof gw._wxResize === "function") {
-      gw._wxResize();
-      return;
+  const plotDiv = graphWrap._wxPlotDiv || graphWrap.querySelector(".wx-plot");
+  const resize = graphWrap._wxResize || (() => {
+    if (plotDiv && plotDiv.clientWidth) {
+      try { Plotly.Plots.resize(plotDiv); } catch (e) {}
     }
-    const pd = activePlot();
-    if (pd && pd.clientWidth) {
-      try { Plotly.Plots.resize(pd); } catch (e) {}
-    }
-  };
+  });
 
   let baseH = 0;
   let rowGap = 16;
@@ -1661,14 +1648,12 @@ function makeCardExpandable(c, child) {
 
   const chromeSize = () => {
     const cr = c.getBoundingClientRect();
-    const plotDiv = activePlot();
     const pr = plotDiv ? plotDiv.getBoundingClientRect() : null;
     if (!pr || !pr.width || !pr.height) return null;
     return [cr.width - pr.width, cr.height - pr.height];
   };
 
   const growWith = (from, chrome, finalW, finalH) => {
-    const plotDiv = activePlot();
     if (!plotDiv || !chrome) return false;
     const fw = Math.round(finalW - chrome[0]);
     const fh = Math.round(finalH - chrome[1]);
@@ -1691,7 +1676,6 @@ function makeCardExpandable(c, child) {
   };
 
   const settle = () => {
-    const plotDiv = activePlot();
     if (!plotDiv) return;
     plotDiv.style.transition = "";
     plotDiv.style.transform = "";
@@ -1700,8 +1684,7 @@ function makeCardExpandable(c, child) {
       delete plotDiv.layout.width;
       delete plotDiv.layout.height;
     }
-    const gw = activeGraph();
-    if (gw && gw._wxHold) return;
+    if (graphWrap && graphWrap._wxHold) return;
     try {
       Plotly.relayout(plotDiv, { autosize: true });
     } catch (e) {}
@@ -1714,7 +1697,6 @@ function makeCardExpandable(c, child) {
     expanded = on;
     setExpandButton(btn, on);
 
-    const plotDiv = activePlot();
     const from = !quiet && !plain && plotDiv && plotDiv.clientWidth
       ? [plotDiv.clientWidth, plotDiv.clientHeight]
       : null;
@@ -2012,23 +1994,6 @@ function gridAxisStations(fig) {
     if (name) map.set(id, name);
   }
   return map;
-}
-
-const GRID_WEBGL = true;
-
-const GRID_WEBGL_MIN_POINTS = 400;
-
-function webglTrace(tr) {
-  if (!GRID_WEBGL || !tr) return tr;
-  if (tr.type && tr.type !== "scatter") return tr;
-  if (tr.mode !== "lines") return tr;
-  if (tr.meta && tr.meta.band_hover) return tr;
-  if (tr.fill === "toself" || tr.fill === "tonext") return tr;
-  const n = (tr.x && tr.x.length) || 0;
-  if (n < GRID_WEBGL_MIN_POINTS) return tr;
-  const out = Object.assign({}, tr);
-  out.type = "scattergl";
-  return out;
 }
 
 function cloneLayout(layout) {
@@ -2854,43 +2819,6 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   return { data: data, layout: layout, yRange: yRange };
 }
 
-function gridPane(config) {
-  const wrap = el("div", "wx-graph");
-  const plotDiv = el("div", "wx-plot");
-  plotDiv.style.width = "100%";
-  wrap.appendChild(plotDiv);
-  wrap._wxPlotDiv = plotDiv;
-  wrap._wxConfig = config;
-
-  let fitTimer = 0;
-  const scheduleFit = () => {
-    if (fitTimer) clearTimeout(fitTimer);
-    fitTimer = setTimeout(() => {
-      fitTimer = 0;
-      fitPlot(plotDiv);
-    }, 140);
-  };
-  wrap._wxFit = scheduleFit;
-
-  wrap._wxResize = () => {
-    if (wrap._wxHold) return;
-    if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
-    if (plotDiv.isConnected && plotDiv.clientWidth) {
-      try { Plotly.Plots.resize(plotDiv); } catch (e) {}
-      scheduleFit();
-    }
-  };
-
-  watchResize(plotDiv, () => {
-    if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
-    if (!plotDiv.clientWidth) return;
-    try { Plotly.Plots.resize(plotDiv); } catch (e) {}
-    scheduleFit();
-  });
-
-  return wrap;
-}
-
 function stationGrid(c, views) {
   const list = (views && views.length ? views : [{ key: "station_grid" }])
     .filter((v) => c && c[v.key]);
@@ -2914,6 +2842,8 @@ function stationGrid(c, views) {
   let baseSlots = null;
   let pendingRanges = null;
   let viewKey = null;
+  let lastSig = null;
+  let lastPd = null;
 
   const useFigure = (key) => {
     fig = c[key];
@@ -2928,9 +2858,7 @@ function stationGrid(c, views) {
     fills = gridZoneFills(fig, cells);
     rowPx = gridRowPx(fig, cells);
     gridCol = gridColumnName(fig);
-    if (fig && Array.isArray(fig.data)) {
-      fig.data = fig.data.map(unifiedBandTrace).map(webglTrace);
-    }
+    if (fig && Array.isArray(fig.data)) fig.data = fig.data.map(unifiedBandTrace);
     if (!baseSlots) {
       baseSlots = new Map();
       for (const cell of cells) {
@@ -2949,72 +2877,7 @@ function stationGrid(c, views) {
   };
   useFigure(list[0].key);
 
-  const gFirst = graph(fig, { height: h, noModeBar: true });
-  gFirst._wxNatural = h;
-  gFirst._wxSig = null;
-
-  const allPanes = new Map();
-  let gSel = null;
-  let activePane = gFirst;
-
-  wrap._wxGridPlots = [gFirst._wxPlotDiv];
-  wrap._wxActiveGraph = () => activePane;
-
-  const makePane = () => {
-    const pane = gridPane(gFirst._wxConfig);
-    pane.style.display = "none";
-    wrap.insertBefore(pane, gFirst.nextSibling);
-    wrap._wxGridPlots.push(pane._wxPlotDiv);
-    return pane;
-  };
-
-  const dropPane = (key, pane) => {
-    allPanes.delete(key);
-    const idx = wrap._wxGridPlots.indexOf(pane._wxPlotDiv);
-    if (idx >= 0) wrap._wxGridPlots.splice(idx, 1);
-    try {
-      Plotly.purge(pane._wxPlotDiv);
-    } catch (e) {
-      void e;
-    }
-    pane.remove();
-  };
-
-  const allPaneFor = (key) => {
-    let pane = allPanes.get(key);
-    if (pane) {
-      allPanes.delete(key);
-      allPanes.set(key, pane);
-      return pane;
-    }
-    pane = makePane();
-    allPanes.set(key, pane);
-    for (const [oldKey, old] of Array.from(allPanes)) {
-      if (allPanes.size <= GRID_VIEW_PANES) break;
-      if (old === gFirst || old === activePane || old === pane) continue;
-      dropPane(oldKey, old);
-    }
-    return pane;
-  };
-
-  const ensureSelPane = () => {
-    if (gSel) return gSel;
-    gSel = makePane();
-    return gSel;
-  };
-
-  const activate = (pane) => {
-    if (activePane !== pane) {
-      pane.style.display = "";
-      if (activePane) activePane.style.display = "none";
-      activePane = pane;
-    }
-    if (wrap._wxGridPlot !== pane._wxPlotDiv) {
-      wrap._wxGridPlot = pane._wxPlotDiv;
-      wrap._wxGraphWrap = pane;
-      wireGridStationClicks(wrap);
-    }
-  };
+  const g = graph(fig, { height: h, noModeBar: true });
 
   let selected = null;
   let order = null;
@@ -3028,7 +2891,7 @@ function stationGrid(c, views) {
   };
 
   const linkGeom = () => {
-    const pd = activePane._wxPlotDiv;
+    const pd = g._wxPlotDiv;
     const dpd = panelPlot(wrap._wxPanel);
     if (!pd || !dpd || !pd._fullLayout || !dpd._fullLayout) return null;
     const gs = pd._fullLayout._size;
@@ -3052,7 +2915,7 @@ function stationGrid(c, views) {
   };
 
   const captureRanges = () => {
-    const pd = activePane._wxPlotDiv;
+    const pd = g._wxPlotDiv;
     const fl = pd && pd._fullLayout;
     if (!fl) return null;
     const out = new Map();
@@ -3065,31 +2928,17 @@ function stationGrid(c, views) {
     return out.size ? out : null;
   };
 
-  const sigFor = (isFiltered, openState, link) => [
-    viewKey,
-    isFiltered ? (overlay ? "1" : "0") : "-",
-    isFiltered && selected ? Array.from(selected).sort().join("\u0001") : "",
-    isFiltered && order ? Array.from(order.keys()).join("\u0002") : "",
-    Math.round(rowPx),
-    openState ? "1" : "0",
-    link
-      ? [
-          (link.align || []).join(","),
-          (link.range || []).join(","),
-          (link.yRange || []).join(","),
-        ].join("|")
-      : "",
-  ].join("~");
-
   const render = () => {
     if (!cells.length) return true;
+    const pd = g._wxPlotDiv;
+    if (!pd || !pd.data || !pd.isConnected) return false;
 
     const useRanges = pendingRanges;
     pendingRanges = null;
 
     const filtered = !!(selected && selected.size);
     wrap._wxStacked = filtered;
-
+    wrap._wxOverlay = false;
     if (!filtered) {
       if (typeof wrap._wxSpikeOff === "function") wrap._wxSpikeOff();
       const open = panelPlot(wrap._wxPanel);
@@ -3103,124 +2952,113 @@ function stationGrid(c, views) {
         }
       }
     }
-
-    const pane = filtered ? ensureSelPane() : allPaneFor(viewKey);
-    const pd = pane._wxPlotDiv;
-    if (!pd || !pd.isConnected) return false;
-    if (pane === gFirst && !pd.data) return false;
-
     const link = filtered ? linkGeom() : null;
-    const canExpand = typeof wrap._wxExpand === "function";
-    const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
-    const collapsing = canExpand && !filtered && autoExpanded;
-    const willOpen = canExpand && (filtered ? true : (collapsing ? false : isOpen()));
-
-    const sig = sigFor(filtered, willOpen, link);
-
-    const fresh = !useRanges && pd._wxDrawn && pane._wxSig === sig;
-
+    const wantOverlay = filtered && overlay;
     let next = null;
-    if (fresh) {
-      wrap._wxOverlay = !!pane._wxIsOverlay;
-    } else {
-      const wantOverlay = filtered && overlay;
-      wrap._wxOverlay = false;
+    try {
+      if (wantOverlay) {
+        next = buildOverlayFigure(
+          fig, cells, rowPx, selected, link, useRanges, order
+        );
+      }
+      wrap._wxOverlay = !!next;
+      if (!next) {
+        next = buildGridFigure(
+          fig, cells, fills, rowPx, selected, link, useRanges, order
+        );
+      }
+    } catch (e) {
+      console.warn("station grid filter failed", e);
+      return true;
+    }
+    if (isMobile()) {
       try {
-        if (wantOverlay) {
-          next = buildOverlayFigure(
-            fig, cells, rowPx, selected, link, useRanges, order
-          );
-        }
-        wrap._wxOverlay = !!next;
-        if (!next) {
-          next = buildGridFigure(
-            fig, cells, fills, rowPx, selected, link, useRanges, order
-          );
-        }
+        next = buildMobileFigure(next, { height: next.layout.height });
       } catch (e) {
-        console.warn("station grid filter failed", e);
-        return true;
+        void e;
       }
-      if (isMobile()) {
-        try {
-          next = buildMobileFigure(next, { height: next.layout.height });
-        } catch (e) {
-          void e;
-        }
-      }
-      pane._wxNatural = next.layout.height;
     }
 
-    activate(pane);
-
-    const natural = pane._wxNatural || h;
+    const natural = next.layout.height;
     const chrome = Math.max(
       0,
       Math.round(wrap.getBoundingClientRect().height - pd.getBoundingClientRect().height)
     );
-    pane._wxHold = true;
+
+    const canExpand = typeof wrap._wxExpand === "function";
+    const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
+
+    const sig = [
+      viewKey,
+      wantOverlay ? "1" : "0",
+      selected ? Array.from(selected).sort().join("\u0001") : "",
+      order ? Array.from(order.keys()).join("\u0002") : "",
+      Math.round(rowPx),
+      Math.round(natural),
+      chrome,
+      isOpen() ? "1" : "0",
+      link
+        ? [
+            (link.align || []).join(","),
+            (link.range || []).join(","),
+            (link.yRange || []).join(","),
+          ].join("|")
+        : "",
+    ].join("~");
+
+    if (!useRanges && pd === lastPd && pd._wxDrawn && sig === lastSig) return true;
+    lastPd = pd;
+    lastSig = sig;
+
+    const collapsing = canExpand && !filtered && autoExpanded;
+
+    g._wxHold = true;
     try {
       quietly(() => {
         if (collapsing) {
           autoExpanded = false;
           wrap._wxExpand(false);
-        } else if (canExpand && filtered && !isOpen()) {
-          autoExpanded = true;
-          wrap._wxExpand(true, true);
         }
         if (typeof wrap._wxRebase === "function") wrap._wxRebase(natural + chrome);
       });
 
-      if (next) {
-        if (willOpen) {
-          delete next.layout.height;
-          next.layout.autosize = true;
-        } else {
-          pd.style.height = natural + "px";
-        }
+      if (canExpand && isOpen()) {
+        delete next.layout.height;
+        next.layout.autosize = true;
+      } else {
+        pd.style.height = natural + "px";
+      }
 
-        try {
-          if (pd._wxDrawn) {
-            Plotly.react(pd, next.data, next.layout, pane._wxConfig);
-          } else {
-            Plotly.newPlot(pd, next.data, next.layout, pane._wxConfig).then(() => {
-              pd._wxDrawn = true;
-              settleAngledTicks(pd);
-            });
-          }
-        } catch (e) {
-          console.warn("station grid redraw failed", e);
-          pane._wxSig = null;
-          return true;
-        }
+      try {
+        Plotly.react(pd, next.data, next.layout, g._wxConfig);
+      } catch (e) {
+        console.warn("station grid redraw failed", e);
+        lastSig = null;
+        return true;
+      }
 
-        pane._wxSig = sig;
-        pane._wxIsOverlay = !!wrap._wxOverlay;
-
-        if (link && link.yRange && next.yRange) {
-          const dpd = panelPlot(wrap._wxPanel);
-          if (dpd) {
-            wrap._wxYPushed = true;
-            pushRange(dpd, "yaxis", next.yRange);
-          }
+      if (link && link.yRange && next.yRange) {
+        const dpd = panelPlot(wrap._wxPanel);
+        if (dpd) {
+          wrap._wxYPushed = true;
+          pushRange(dpd, "yaxis", next.yRange);
         }
       }
 
+      if (canExpand && filtered && !isOpen()) {
+        autoExpanded = true;
+        quietly(() => wrap._wxExpand(true, true));
+      }
     } finally {
-      pane._wxHold = false;
+      g._wxHold = false;
     }
 
     const fl = pd._fullLayout;
-    const wantW = Math.round(pd.clientWidth || 0);
-    const wantH = Math.round(pd.clientHeight || 0);
-    const mismatched = !!fl && (
-      (wantW && Math.abs(Math.round(fl.width || 0) - wantW) > 1) ||
-      (wantH && Math.abs(Math.round(fl.height || 0) - wantH) > 1)
-    );
-    if (mismatched) {
-      if (typeof pane._wxResize === "function") pane._wxResize();
-    } else if (typeof pane._wxFit === "function") {
-      pane._wxFit();
+    const want = Math.round(pd.clientHeight || 0);
+    if (fl && want && Math.abs(Math.round(fl.height || 0) - want) > 1) {
+      if (typeof g._wxResize === "function") g._wxResize();
+    } else if (typeof g._wxFit === "function") {
+      g._wxFit();
     }
     return true;
   };
@@ -3316,12 +3154,10 @@ function stationGrid(c, views) {
 
   if (bar) wrap.appendChild(bar);
 
-  wrap.appendChild(gFirst);
-  allPanes.set(viewKey, gFirst);
-  gFirst._wxSig = sigFor(false, false, null);
-  wrap._wxGridPlot = gFirst._wxPlotDiv;
-  wrap._wxGraphWrap = gFirst;
-  if (!isMobile()) makeCardExpandable(wrap, gFirst);
+  wrap.appendChild(g);
+  wrap._wxGridPlot = g._wxPlotDiv;
+  wrap._wxGraphWrap = g;
+  if (!isMobile()) makeCardExpandable(wrap, g);
   wireGridStationClicks(wrap);
 
   return wrap;
@@ -4257,15 +4093,7 @@ function sizeOverviewShell() {
   const shell = $main.querySelector(".wx-ov-shell");
   if (!shell) return;
   const top = shell.getBoundingClientRect().top;
-  const footer = document.querySelector(".al-footer");
-  const below = footer ? Math.ceil(footer.getBoundingClientRect().height) : 0;
-  let pad = 0;
-  try {
-    pad = parseFloat(getComputedStyle($main).paddingBottom) || 0;
-  } catch (e) {
-    pad = 0;
-  }
-  const avail = window.innerHeight - top - 16 - below - pad;
+  const avail = window.innerHeight - top - 16;
   shell.style.height = Math.max(320, Math.round(avail)) + "px";
 }
 
@@ -5070,21 +4898,8 @@ function wireGridSpike(wrap) {
     return true;
   };
 
-  pd._wxSpikeAt = place;
-  pd._wxSpikeOff = hide;
-
-  if (!wrap._wxSpikeDispatch) {
-    wrap._wxSpikeDispatch = true;
-    wrap._wxSpikeAt = (xa, xval) => {
-      const target = wrap._wxGridPlot;
-      return !!(target && target._wxSpikeAt && target._wxSpikeAt(xa, xval));
-    };
-    wrap._wxSpikeOff = () => {
-      for (const target of wrap._wxGridPlots || []) {
-        if (target && target._wxSpikeOff) target._wxSpikeOff();
-      }
-    };
-  }
+  wrap._wxSpikeAt = place;
+  wrap._wxSpikeOff = hide;
 
   pd.on("plotly_hover", (ev) => {
     cancel();
@@ -5326,24 +5141,12 @@ const tabBuilds = new Map();
 let _tabWarmToken = 0;
 let _prebuildHost = null;
 
-function prebuildWidth() {
-  const body = $main ? $main.querySelector(".tab-content") : null;
-  const node = body || $main;
-  const w = node ? Math.round(node.clientWidth || 0) : 0;
-  return w > 0 ? w : Math.round((window.innerWidth || 1200) * 0.9);
-}
-
 function prebuildHost() {
-  const width = prebuildWidth() + "px";
-  if (_prebuildHost && _prebuildHost.isConnected) {
-    _prebuildHost.style.width = width;
-    return _prebuildHost;
-  }
+  if (_prebuildHost && _prebuildHost.isConnected) return _prebuildHost;
   const host = el("div", "wx-prebuild");
   host.setAttribute("aria-hidden", "true");
   host.style.cssText =
-    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;" +
-    "box-sizing:border-box;width:" + width + ";";
+    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;";
   document.body.appendChild(host);
   _prebuildHost = host;
   return host;
