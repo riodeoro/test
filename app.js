@@ -404,6 +404,8 @@ const NEIGHBOUR_OVERLAY_ROWS = 1;
 
 const NEIGHBOUR_LEGEND_MARGIN = 24;
 
+const GRID_VIEW_PANES = 3;
+
 const NEIGHBOUR_LEGEND_COLS = 5;
 
 const NEIGHBOUR_LEGEND_ROW_PX = 14;
@@ -2947,22 +2949,57 @@ function stationGrid(c, views) {
   };
   useFigure(list[0].key);
 
-  const gAll = graph(fig, { height: h, noModeBar: true });
-  gAll._wxNatural = h;
-  gAll._wxSig = null;
+  const gFirst = graph(fig, { height: h, noModeBar: true });
+  gFirst._wxNatural = h;
+  gFirst._wxSig = null;
 
+  const allPanes = new Map();
   let gSel = null;
-  let activePane = gAll;
+  let activePane = gFirst;
 
-  wrap._wxGridPlots = [gAll._wxPlotDiv];
+  wrap._wxGridPlots = [gFirst._wxPlotDiv];
   wrap._wxActiveGraph = () => activePane;
+
+  const makePane = () => {
+    const pane = gridPane(gFirst._wxConfig);
+    pane.style.display = "none";
+    wrap.insertBefore(pane, gFirst.nextSibling);
+    wrap._wxGridPlots.push(pane._wxPlotDiv);
+    return pane;
+  };
+
+  const dropPane = (key, pane) => {
+    allPanes.delete(key);
+    const idx = wrap._wxGridPlots.indexOf(pane._wxPlotDiv);
+    if (idx >= 0) wrap._wxGridPlots.splice(idx, 1);
+    try {
+      Plotly.purge(pane._wxPlotDiv);
+    } catch (e) {
+      void e;
+    }
+    pane.remove();
+  };
+
+  const allPaneFor = (key) => {
+    let pane = allPanes.get(key);
+    if (pane) {
+      allPanes.delete(key);
+      allPanes.set(key, pane);
+      return pane;
+    }
+    pane = makePane();
+    allPanes.set(key, pane);
+    for (const [oldKey, old] of Array.from(allPanes)) {
+      if (allPanes.size <= GRID_VIEW_PANES) break;
+      if (old === gFirst || old === activePane || old === pane) continue;
+      dropPane(oldKey, old);
+    }
+    return pane;
+  };
 
   const ensureSelPane = () => {
     if (gSel) return gSel;
-    gSel = gridPane(gAll._wxConfig);
-    gSel.style.display = "none";
-    wrap.insertBefore(gSel, gAll.nextSibling);
-    wrap._wxGridPlots.push(gSel._wxPlotDiv);
+    gSel = makePane();
     return gSel;
   };
 
@@ -3067,10 +3104,10 @@ function stationGrid(c, views) {
       }
     }
 
-    const pane = filtered ? ensureSelPane() : gAll;
+    const pane = filtered ? ensureSelPane() : allPaneFor(viewKey);
     const pd = pane._wxPlotDiv;
     if (!pd || !pd.isConnected) return false;
-    if (pane === gAll && !pd.data) return false;
+    if (pane === gFirst && !pd.data) return false;
 
     const link = filtered ? linkGeom() : null;
     const canExpand = typeof wrap._wxExpand === "function";
@@ -3279,11 +3316,12 @@ function stationGrid(c, views) {
 
   if (bar) wrap.appendChild(bar);
 
-  wrap.appendChild(gAll);
-  gAll._wxSig = sigFor(false, false, null);
-  wrap._wxGridPlot = gAll._wxPlotDiv;
-  wrap._wxGraphWrap = gAll;
-  if (!isMobile()) makeCardExpandable(wrap, gAll);
+  wrap.appendChild(gFirst);
+  allPanes.set(viewKey, gFirst);
+  gFirst._wxSig = sigFor(false, false, null);
+  wrap._wxGridPlot = gFirst._wxPlotDiv;
+  wrap._wxGraphWrap = gFirst;
+  if (!isMobile()) makeCardExpandable(wrap, gFirst);
   wireGridStationClicks(wrap);
 
   return wrap;
@@ -5288,12 +5326,24 @@ const tabBuilds = new Map();
 let _tabWarmToken = 0;
 let _prebuildHost = null;
 
+function prebuildWidth() {
+  const body = $main ? $main.querySelector(".tab-content") : null;
+  const node = body || $main;
+  const w = node ? Math.round(node.clientWidth || 0) : 0;
+  return w > 0 ? w : Math.round((window.innerWidth || 1200) * 0.9);
+}
+
 function prebuildHost() {
-  if (_prebuildHost && _prebuildHost.isConnected) return _prebuildHost;
+  const width = prebuildWidth() + "px";
+  if (_prebuildHost && _prebuildHost.isConnected) {
+    _prebuildHost.style.width = width;
+    return _prebuildHost;
+  }
   const host = el("div", "wx-prebuild");
   host.setAttribute("aria-hidden", "true");
   host.style.cssText =
-    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;";
+    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;" +
+    "box-sizing:border-box;width:" + width + ";";
   document.body.appendChild(host);
   _prebuildHost = host;
   return host;
