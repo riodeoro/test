@@ -2841,9 +2841,13 @@ function stationGrid(c, views) {
   let gridCol = null;
   let baseSlots = null;
   let pendingRanges = null;
+  let viewKey = null;
+  let lastSig = null;
+  let lastPd = null;
 
   const useFigure = (key) => {
     fig = c[key];
+    viewKey = key;
     applyDetailHoverStyle(fig && fig.layout);
     captureStationAnnotations(fig, wrap._wxStations);
     wrap._wxAxisStations.clear();
@@ -2984,6 +2988,28 @@ function stationGrid(c, views) {
     const canExpand = typeof wrap._wxExpand === "function";
     const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
 
+    const sig = [
+      viewKey,
+      wantOverlay ? "1" : "0",
+      selected ? Array.from(selected).sort().join("\u0001") : "",
+      order ? Array.from(order.keys()).join("\u0002") : "",
+      Math.round(rowPx),
+      Math.round(natural),
+      chrome,
+      isOpen() ? "1" : "0",
+      link
+        ? [
+            (link.align || []).join(","),
+            (link.range || []).join(","),
+            (link.yRange || []).join(","),
+          ].join("|")
+        : "",
+    ].join("~");
+
+    if (!useRanges && pd === lastPd && pd._wxDrawn && sig === lastSig) return true;
+    lastPd = pd;
+    lastSig = sig;
+
     const collapsing = canExpand && !filtered && autoExpanded;
 
     g._wxHold = true;
@@ -3007,6 +3033,7 @@ function stationGrid(c, views) {
         Plotly.react(pd, next.data, next.layout, g._wxConfig);
       } catch (e) {
         console.warn("station grid redraw failed", e);
+        lastSig = null;
         return true;
       }
 
