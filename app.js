@@ -5178,6 +5178,28 @@ function activePane() {
   return $panes ? $panes.querySelector(".tab-pane.active") : null;
 }
 
+const HOVER_PREBUILD_MS = 90;
+
+let _hoverTimer = 0;
+
+function cancelHoverPrebuild() {
+  if (!_hoverTimer) return;
+  clearTimeout(_hoverTimer);
+  _hoverTimer = 0;
+}
+
+function hoverPrebuild(tab) {
+  cancelHoverPrebuild();
+  if (!state.fc) return;
+  const entry = tabPanes.get(tab.id);
+  if (entry && (entry.ready || entry.job)) return;
+  _hoverTimer = setTimeout(() => {
+    _hoverTimer = 0;
+    if (!state.fc) return;
+    fillPane(tab);
+  }, HOVER_PREBUILD_MS);
+}
+
 function tabShell() {
   if ($panes && $panes.isConnected) return $panes;
   $main.innerHTML = "";
@@ -5187,7 +5209,15 @@ function tabShell() {
   for (const t of TABS) {
     const btn = el("div", "al-tab", t.label);
     btn.dataset.tab = t.id;
-    btn.addEventListener("click", () => renderTab(t.id));
+    btn.addEventListener("click", () => {
+      cancelHoverPrebuild();
+      renderTab(t.id);
+    });
+    btn.addEventListener("pointerenter", (ev) => {
+      if (ev.pointerType && ev.pointerType !== "mouse") return;
+      hoverPrebuild(t);
+    });
+    btn.addEventListener("pointerleave", cancelHoverPrebuild);
     bar.appendChild(btn);
   }
   $main.appendChild(bar);
