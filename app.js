@@ -1996,6 +1996,57 @@ function gridAxisStations(fig) {
   return map;
 }
 
+function pruneGridAxes(fig) {
+  if (!fig || !fig.layout || fig._wxAxesPruned) return 0;
+  fig._wxAxesPruned = true;
+  const layout = fig.layout;
+
+  const used = new Set();
+  const mark = (v) => {
+    if (typeof v !== "string" || !v) return;
+    const id = v.split(" ")[0];
+    if (/^[xy]\d*$/.test(id)) used.add(id);
+  };
+
+  for (const tr of fig.data || []) {
+    mark(tr && tr.xaxis ? tr.xaxis : "x");
+    mark(tr && tr.yaxis ? tr.yaxis : "y");
+  }
+  for (const a of layout.annotations || []) {
+    mark(a && a.xref);
+    mark(a && a.yref);
+  }
+  for (const s of layout.shapes || []) {
+    mark(s && s.xref);
+    mark(s && s.yref);
+  }
+  for (const im of layout.images || []) {
+    mark(im && im.xref);
+    mark(im && im.yref);
+  }
+  for (const key of Object.keys(layout)) {
+    if (!/^[xy]axis\d*$/.test(key)) continue;
+    const ax = layout[key];
+    if (!ax) continue;
+    if (typeof ax.matches === "string") mark(ax.matches);
+    if (typeof ax.overlaying === "string") mark(ax.overlaying);
+    if (typeof ax.scaleanchor === "string") mark(ax.scaleanchor);
+  }
+
+  let dropped = 0;
+  for (const key of Object.keys(layout)) {
+    if (!/^xaxis\d*$/.test(key)) continue;
+    const idx = key === "xaxis" ? "" : key.slice(5);
+    if (used.has("x" + idx) || used.has("y" + idx)) continue;
+    const ykey = "yaxis" + idx;
+    if (!layout[ykey]) continue;
+    delete layout[key];
+    delete layout[ykey];
+    dropped++;
+  }
+  return dropped;
+}
+
 function cloneLayout(layout) {
   if (!layout) return {};
   const tpl = layout.template;
@@ -2848,6 +2899,7 @@ function stationGrid(c, views) {
   const useFigure = (key) => {
     fig = c[key];
     viewKey = key;
+    pruneGridAxes(fig);
     applyDetailHoverStyle(fig && fig.layout);
     captureStationAnnotations(fig, wrap._wxStations);
     wrap._wxAxisStations.clear();
