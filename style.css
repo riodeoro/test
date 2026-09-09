@@ -471,6 +471,15 @@ pre { line-height: 1.5; }
 
 .main-content { padding: 8px 20px 20px; }
 .tab-content { padding: 12px 0; }
+.tab-panes { position: relative; }
+.tab-pane:not(.active) {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  visibility: hidden;
+  pointer-events: none;
+}
 .wx-card {
   background: #ffffff;
   border-radius: 10px;
