@@ -5333,10 +5333,22 @@ function warmTabPayloads() {
   if (!isMobile()) setTimeout(build, TAB_PREBUILD_DELAY_MS);
 }
 
+let _renderToken = 0;
+
+function afterPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
 async function renderTab(tabId) {
   const tab = TABS.find(t => t.id === tabId) || TABS[0];
   state.activeTab = tab.id;
   holdPrebuild(PREBUILD_HOLD_MS);
+  const token = ++_renderToken;
+  const stale = () => token !== _renderToken;
 
   $main.innerHTML = "";
 
@@ -5351,42 +5363,38 @@ async function renderTab(tabId) {
   const body = el("div", "tab-content");
   $main.appendChild(body);
 
-  const key = tabCacheKey(tab.id);
-  const cached = tabCache.get(key);
-  if (cached) {
-    body.appendChild(cached);
-    requestAnimationFrame(() => {
-      resizePlots(cached);
-      sizeOverviewShell();
-      holdPrebuild(PREBUILD_HOLD_MS);
-    });
-    scheduleWarm();
-    warmTabPayloads();
-    return;
-  }
-
   const loading = el("div", "al-loading");
   loading.appendChild(el("div", "spinner"));
   loading.appendChild(el("span", null, "Loading\u2026"));
   body.appendChild(loading);
 
-  const pending = tabBuilds.get(key);
-  let content;
-  if (pending) {
-    content = await pending;
-  } else {
-    const job = tab.build(state.fc, state.hours);
-    tabBuilds.set(key, job);
-    try {
-      content = await job;
-    } finally {
-      if (tabBuilds.get(key) === job) tabBuilds.delete(key);
+  const key = tabCacheKey(tab.id);
+
+  await afterPaint();
+  if (stale()) return;
+
+  let content = tabCache.get(key);
+  if (!content) {
+    const pending = tabBuilds.get(key);
+    if (pending) {
+      content = await pending;
+    } else {
+      const job = tab.build(state.fc, state.hours);
+      tabBuilds.set(key, job);
+      try {
+        content = await job;
+      } finally {
+        if (tabBuilds.get(key) === job) tabBuilds.delete(key);
+      }
     }
+    if (stale()) return;
+    tabCache.set(key, content);
   }
-  tabCache.set(key, content);
+
   body.innerHTML = "";
   body.appendChild(content);
   requestAnimationFrame(() => {
+    if (stale()) return;
     resizePlots(content);
     sizeOverviewShell();
     holdPrebuild(PREBUILD_HOLD_MS);
