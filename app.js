@@ -41,31 +41,40 @@ function stripWebgl(bundle) {
   return bundle;
 }
 
-async function fetchJson(filename) {
-  if (memCache.has(filename)) return memCache.get(filename);
-  try {
-    const res = await fetch(BUCKET_BASE + filename, { cache: "default" });
-    if (!res.ok) return null;
-    const data = stripWebgl(await res.json());
-    memCache.set(filename, data);
-    return data;
-  } catch (e) {
-    console.warn("fetchJson failed", filename, e);
-    return null;
-  }
+const inflight = new Map();
+
+function fetchShared(filename, read, onError) {
+  if (memCache.has(filename)) return Promise.resolve(memCache.get(filename));
+  const hit = inflight.get(filename);
+  if (hit) return hit;
+  const job = (async () => {
+    try {
+      const res = await fetch(BUCKET_BASE + filename, { cache: "default" });
+      if (!res.ok) return null;
+      const data = await read(res);
+      memCache.set(filename, data);
+      return data;
+    } catch (e) {
+      if (onError) onError(e);
+      return null;
+    } finally {
+      inflight.delete(filename);
+    }
+  })();
+  inflight.set(filename, job);
+  return job;
 }
 
-async function fetchText(filename) {
-  if (memCache.has(filename)) return memCache.get(filename);
-  try {
-    const res = await fetch(BUCKET_BASE + filename, { cache: "default" });
-    if (!res.ok) return null;
-    const data = await res.text();
-    memCache.set(filename, data);
-    return data;
-  } catch (e) {
-    return null;
-  }
+function fetchJson(filename) {
+  return fetchShared(
+    filename,
+    async (res) => stripWebgl(await res.json()),
+    (e) => console.warn("fetchJson failed", filename, e)
+  );
+}
+
+function fetchText(filename) {
+  return fetchShared(filename, (res) => res.text(), null);
 }
 
 function peekCharts(fc, hours, suffix) {
@@ -5168,6 +5177,15 @@ const TAB_PREBUILD_SETTLE_MS = 6000;
 const TAB_PREBUILD_GAP_MS = 60;
 const TAB_PREBUILD_IDLE_MS = 1200;
 const TAB_SETTLE_POLL_MS = 60;
+const PREBUILD_HOLD_MS = 1400;
+const PREBUILD_RECHECK_MS = 200;
+
+let _prebuildHoldUntil = 0;
+
+function holdPrebuild(msAhead) {
+  const until = performance.now() + (msAhead || PREBUILD_HOLD_MS);
+  if (until > _prebuildHoldUntil) _prebuildHoldUntil = until;
+}
 
 const tabBuilds = new Map();
 
@@ -5292,6 +5310,11 @@ function warmTabPayloads() {
 
   const build = () => {
     if (stale(token)) return;
+    const wait = _prebuildHoldUntil - performance.now();
+    if (wait > 0) {
+      setTimeout(build, Math.min(wait + 20, PREBUILD_RECHECK_MS));
+      return;
+    }
     const tab = queue.shift();
     if (!tab) return;
     prebuildTab(tab, token, stale)
@@ -5313,6 +5336,7 @@ function warmTabPayloads() {
 async function renderTab(tabId) {
   const tab = TABS.find(t => t.id === tabId) || TABS[0];
   state.activeTab = tab.id;
+  holdPrebuild(PREBUILD_HOLD_MS);
 
   $main.innerHTML = "";
 
@@ -5334,6 +5358,7 @@ async function renderTab(tabId) {
     requestAnimationFrame(() => {
       resizePlots(cached);
       sizeOverviewShell();
+      holdPrebuild(PREBUILD_HOLD_MS);
     });
     scheduleWarm();
     warmTabPayloads();
@@ -5364,6 +5389,7 @@ async function renderTab(tabId) {
   requestAnimationFrame(() => {
     resizePlots(content);
     sizeOverviewShell();
+    holdPrebuild(PREBUILD_HOLD_MS);
   });
   scheduleWarm();
   warmTabPayloads();
@@ -5387,6 +5413,7 @@ async function runAnalysis() {
   if (changed) state.range = null;
   if (changed) {
     memCache.clear();
+    inflight.clear();
     tabCache.clear();
     cancelPrefetch();
   }
