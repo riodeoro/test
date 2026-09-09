@@ -19,12 +19,34 @@ function safeFc(fcName) {
 
 const memCache = new Map();
 
+const GL_TRACE_TYPES = {
+  scattergl: "scatter",
+  scatterpolargl: "scatterpolar",
+  heatmapgl: "heatmap",
+};
+
+function stripWebgl(bundle) {
+  if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
+    return bundle;
+  }
+  for (const key of Object.keys(bundle)) {
+    const fig = bundle[key];
+    if (!fig || typeof fig !== "object" || !Array.isArray(fig.data)) continue;
+    for (const tr of fig.data) {
+      if (!tr || typeof tr !== "object") continue;
+      const swap = GL_TRACE_TYPES[tr.type];
+      if (swap) tr.type = swap;
+    }
+  }
+  return bundle;
+}
+
 async function fetchJson(filename) {
   if (memCache.has(filename)) return memCache.get(filename);
   try {
     const res = await fetch(BUCKET_BASE + filename, { cache: "default" });
     if (!res.ok) return null;
-    const data = await res.json();
+    const data = stripWebgl(await res.json());
     memCache.set(filename, data);
     return data;
   } catch (e) {
