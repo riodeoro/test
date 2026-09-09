@@ -5178,7 +5178,7 @@ function activePane() {
   return $panes ? $panes.querySelector(".tab-pane.active") : null;
 }
 
-const HOVER_PREBUILD_MS = 90;
+const HOVER_PREBUILD_MS = 45;
 
 let _hoverTimer = 0;
 
