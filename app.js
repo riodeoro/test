@@ -2012,6 +2012,23 @@ function gridAxisStations(fig) {
   return map;
 }
 
+const GRID_WEBGL = true;
+
+const GRID_WEBGL_MIN_POINTS = 400;
+
+function webglTrace(tr) {
+  if (!GRID_WEBGL || !tr) return tr;
+  if (tr.type && tr.type !== "scatter") return tr;
+  if (tr.mode !== "lines") return tr;
+  if (tr.meta && tr.meta.band_hover) return tr;
+  if (tr.fill === "toself" || tr.fill === "tonext") return tr;
+  const n = (tr.x && tr.x.length) || 0;
+  if (n < GRID_WEBGL_MIN_POINTS) return tr;
+  const out = Object.assign({}, tr);
+  out.type = "scattergl";
+  return out;
+}
+
 function cloneLayout(layout) {
   if (!layout) return {};
   const tpl = layout.template;
@@ -2909,7 +2926,9 @@ function stationGrid(c, views) {
     fills = gridZoneFills(fig, cells);
     rowPx = gridRowPx(fig, cells);
     gridCol = gridColumnName(fig);
-    if (fig && Array.isArray(fig.data)) fig.data = fig.data.map(unifiedBandTrace);
+    if (fig && Array.isArray(fig.data)) {
+      fig.data = fig.data.map(unifiedBandTrace).map(webglTrace);
+    }
     if (!baseSlots) {
       baseSlots = new Map();
       for (const cell of cells) {
@@ -3056,8 +3075,10 @@ function stationGrid(c, views) {
     const link = filtered ? linkGeom() : null;
     const canExpand = typeof wrap._wxExpand === "function";
     const isOpen = () => !!(wrap._wxIsExpanded && wrap._wxIsExpanded());
+    const collapsing = canExpand && !filtered && autoExpanded;
+    const willOpen = canExpand && (filtered ? true : (collapsing ? false : isOpen()));
 
-    const sig = sigFor(filtered, isOpen(), link);
+    const sig = sigFor(filtered, willOpen, link);
 
     const fresh = !useRanges && pd._wxDrawn && pane._wxSig === sig;
 
@@ -3100,20 +3121,21 @@ function stationGrid(c, views) {
       0,
       Math.round(wrap.getBoundingClientRect().height - pd.getBoundingClientRect().height)
     );
-    const collapsing = canExpand && !filtered && autoExpanded;
-
     pane._wxHold = true;
     try {
       quietly(() => {
         if (collapsing) {
           autoExpanded = false;
           wrap._wxExpand(false);
+        } else if (canExpand && filtered && !isOpen()) {
+          autoExpanded = true;
+          wrap._wxExpand(true, true);
         }
         if (typeof wrap._wxRebase === "function") wrap._wxRebase(natural + chrome);
       });
 
       if (next) {
-        if (canExpand && isOpen()) {
+        if (willOpen) {
           delete next.layout.height;
           next.layout.autosize = true;
         } else {
@@ -3147,10 +3169,6 @@ function stationGrid(c, views) {
         }
       }
 
-      if (canExpand && filtered && !isOpen()) {
-        autoExpanded = true;
-        quietly(() => wrap._wxExpand(true, true));
-      }
     } finally {
       pane._wxHold = false;
     }
@@ -4201,7 +4219,15 @@ function sizeOverviewShell() {
   const shell = $main.querySelector(".wx-ov-shell");
   if (!shell) return;
   const top = shell.getBoundingClientRect().top;
-  const avail = window.innerHeight - top - 16;
+  const footer = document.querySelector(".al-footer");
+  const below = footer ? Math.ceil(footer.getBoundingClientRect().height) : 0;
+  let pad = 0;
+  try {
+    pad = parseFloat(getComputedStyle($main).paddingBottom) || 0;
+  } catch (e) {
+    pad = 0;
+  }
+  const avail = window.innerHeight - top - 16 - below - pad;
   shell.style.height = Math.max(320, Math.round(avail)) + "px";
 }
 
