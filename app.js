@@ -1530,8 +1530,7 @@ function graph(figDict, opts = {}) {
   return wrap;
 }
 
-const CARD_ANIM_MS = 340;
-const CARD_EASE = "cubic-bezier(.4,0,.2,1)";
+const CARD_ANIM_MS = 0;
 
 const EXPAND_ICON =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
@@ -1545,13 +1544,10 @@ function ensureCardExpandStyles() {
   if (document.getElementById("wx-cardexpand-styles")) return;
   const st = document.createElement("style");
   st.id = "wx-cardexpand-styles";
-  const ease = "cubic-bezier(.4,0,.2,1)";
   st.textContent = [
     ".wx-expandable{position:relative;overflow:hidden;box-sizing:border-box;",
     "display:flex;flex-direction:column;",
-    "transition:width .34s " + ease + ",height .34s " + ease + ",margin .34s " + ease + ",",
-    "padding .34s " + ease + ",border-width .34s " + ease + ",border-color .2s ease,",
-    "box-shadow .24s ease,opacity .22s ease;}",
+    "transition:border-color .2s ease,box-shadow .24s ease;}",
     ".wx-expandable > .wx-graph{flex:1 1 auto;min-height:0;}",
     ".wx-expandable > .wx-graph > .wx-plot{height:100%!important;}",
     ".wx-expandable.wx-expanded{border-color:#dcd9d4;box-shadow:0 6px 22px rgba(0,0,0,.07);}",
@@ -1572,8 +1568,6 @@ function ensureCardExpandStyles() {
     ".wx-expandable .js-plotly-plot .modebar{transform:translateX(-30px)!important;}",
     ".wx-expandable .wx-stnf-float{right:40px;}",
     "@media (max-width:768px){.wx-expand-btn{display:none;}}",
-    "@media (prefers-reduced-motion:reduce){.wx-expandable,.wx-expand-btn,",
-    ".wx-expandable > .wx-graph > .wx-plot{transition:none!important;}}",
   ].join("");
   document.head.appendChild(st);
 }
@@ -1681,28 +1675,16 @@ function makeCardExpandable(c, child) {
     const fw = Math.round(finalW - chrome[0]);
     const fh = Math.round(finalH - chrome[1]);
     if (!(fw > 40) || !(fh > 40)) return false;
-    if (from && Math.abs(fw - from[0]) < 2 && Math.abs(fh - from[1]) < 2) return false;
     try {
       Plotly.relayout(plotDiv, { autosize: false, width: fw, height: fh });
     } catch (e) {
       return false;
     }
-    if (!from) return true;
-    plotDiv.style.transition = "none";
-    plotDiv.style.transformOrigin = "top left";
-    plotDiv.style.transform =
-      "scale(" + (from[0] / fw) + "," + (from[1] / fh) + ")";
-    void plotDiv.offsetWidth;
-    plotDiv.style.transition = "transform " + CARD_ANIM_MS + "ms " + CARD_EASE;
-    plotDiv.style.transform = "scale(1,1)";
     return true;
   };
 
   const settle = () => {
     if (!plotDiv) return;
-    plotDiv.style.transition = "";
-    plotDiv.style.transform = "";
-    plotDiv.style.transformOrigin = "";
     if (plotDiv.layout) {
       delete plotDiv.layout.width;
       delete plotDiv.layout.height;
@@ -1720,9 +1702,6 @@ function makeCardExpandable(c, child) {
     expanded = on;
     setExpandButton(btn, on);
 
-    const from = !quiet && !plain && plotDiv && plotDiv.clientWidth
-      ? [plotDiv.clientWidth, plotDiv.clientHeight]
-      : null;
     const chrome = quiet ? null : chromeSize();
 
     c.classList.toggle("wx-expanded", on);
@@ -1761,7 +1740,7 @@ function makeCardExpandable(c, child) {
 
     const finalH = on ? targetHeight(!!(row && sib)) : baseH;
     c.style.height = finalH + "px";
-    growWith(from, chrome, finalW, finalH);
+    growWith(null, chrome, finalW, finalH);
 
     if (timer) clearTimeout(timer);
     const done = () => {
@@ -2198,8 +2177,7 @@ function ensureInsightStyles() {
   st.id = "wx-insight-styles";
   st.textContent = [
     ".wx-insight-shell{position:relative;margin-bottom:16px;}",
-    ".wx-insight-shell > .wx-ov-wrap{max-height:180px;",
-    "transition:max-height .34s cubic-bezier(.4,0,.2,1);}",
+    ".wx-insight-shell > .wx-ov-wrap{max-height:180px;}",
     ".wx-insight-shell > .wx-expand-btn{right:16px;background:var(--surface,#fff);",
     "border-color:var(--line,#e8e6e3);}",
     ".wx-stn-link{cursor:pointer;border-bottom:1px dotted currentColor;}",
@@ -3635,9 +3613,7 @@ function ensureOverviewStyles() {
     ".wx-ov-shell{display:flex;flex-direction:column;min-height:320px;}",
     ".wx-ov-chart{flex:0 0 auto;background:var(--surface);overflow:hidden;",
     "border:1px solid var(--line);border-radius:10px;padding:12px;",
-    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;",
-    "transition:height " + PANEL_ANIM_MS + "ms cubic-bezier(.4,0,.2,1);}",
-    "@media (prefers-reduced-motion:reduce){.wx-ov-chart{transition:none;}}",
+    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
     ".wx-ov-wrap{flex:0 1 auto;min-height:0;overflow:auto;",
     "background:var(--surface);border:1px solid var(--line);",
     "border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.04);}",
@@ -3696,7 +3672,6 @@ const OVERVIEW_CELLS = {
 
 const OVERVIEW_PLOT_MAX = 420;
 
-const PANEL_ANIM_MS = 120;
 
 const PANEL_CHROME = 96;
 
@@ -3810,9 +3785,9 @@ function showPanel(panel) {
   if (rect.top >= guard && rect.bottom <= room) return;
   const top = rect.top + window.scrollY - guard;
   try {
-    window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-  } catch (e) {
     window.scrollTo(0, Math.max(0, top));
+  } catch (e) {
+    void e;
   }
 }
 
@@ -3880,14 +3855,7 @@ function openOverviewChart(panel, f, row) {
   if (row) row.classList.add("sel");
 
   if (!wasOpen) {
-    panel.style.height = "0px";
-    requestAnimationFrame(() => {
-      if (panel._wxRow !== row) return;
-      panel.style.height = overviewPlotCap(panel) + PANEL_CHROME + "px";
-    });
-    setTimeout(() => {
-      if (panel._wxRow === row) panel.style.height = "";
-    }, PANEL_ANIM_MS + 40);
+    panel.style.height = "";
   }
 
   const head = el("div", "wx-detail-head");
@@ -5482,9 +5450,9 @@ if ($brand) {
     if (!state.fc) return;
     Promise.resolve(renderTab(OVERVIEW_TAB)).then(() => closeOpenPanels($main));
     try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e) {
       window.scrollTo(0, 0);
+    } catch (e) {
+      void e;
     }
   });
 }
