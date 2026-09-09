@@ -1452,6 +1452,7 @@ function graph(figDict, opts = {}) {
         .then(() => {
           mounted = true;
           plotDiv._wxDrawn = true;
+          plotDiv._wxWidth = plotDiv.clientWidth;
           settleAngledTicks(plotDiv);
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
@@ -5170,11 +5171,25 @@ function plotsSettled(root, timeoutMs) {
   });
 }
 
+function prebuildWidth() {
+  const fallback = window.innerWidth || 1024;
+  if (!$main) return fallback;
+  const box = $main.clientWidth || fallback;
+  let pad = 0;
+  try {
+    const cs = window.getComputedStyle($main);
+    pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  } catch (e) {
+    pad = 0;
+  }
+  return Math.max(320, Math.round(box - pad));
+}
+
 async function prebuildTab(tab, token, stale) {
   const key = tabCacheKey(tab.id);
   if (tabCache.has(key) || tabBuilds.has(key)) return;
   const host = prebuildHost();
-  host.style.width = ($main.clientWidth || window.innerWidth) + "px";
+  host.style.width = prebuildWidth() + "px";
   const slot = el("div", "tab-content");
   host.appendChild(slot);
 
