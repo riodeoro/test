@@ -4090,11 +4090,51 @@ function overviewTable(findings, panel, columns) {
   return wrap;
 }
 
+const OVERVIEW_SHELL_GAP = 8;
+
+function overviewReserve(shell) {
+  let reserve = OVERVIEW_SHELL_GAP;
+  const px = (v) => parseFloat(v) || 0;
+
+  let node = shell;
+  while (node && node !== document.body && node.nodeType === 1) {
+    let cs = null;
+    try {
+      cs = window.getComputedStyle(node);
+    } catch (e) {
+      cs = null;
+    }
+    if (cs) {
+      reserve += px(cs.marginBottom);
+      if (node !== shell) {
+        reserve += px(cs.paddingBottom) + px(cs.borderBottomWidth);
+      }
+    }
+    node = node.parentNode;
+  }
+
+  const footer = document.querySelector(".al-footer");
+  if (footer) {
+    const box = footer.getBoundingClientRect();
+    if (box.height) {
+      let cs = null;
+      try {
+        cs = window.getComputedStyle(footer);
+      } catch (e) {
+        cs = null;
+      }
+      reserve += box.height + (cs ? px(cs.marginTop) + px(cs.marginBottom) : 0);
+    }
+  }
+
+  return Math.round(reserve);
+}
+
 function sizeOverviewShell() {
   const shell = $main.querySelector(".wx-ov-shell");
   if (!shell) return;
   const top = shell.getBoundingClientRect().top;
-  const avail = window.innerHeight - top - 16;
+  const avail = window.innerHeight - top - overviewReserve(shell);
   shell.style.height = Math.max(320, Math.round(avail)) + "px";
 }
 
@@ -5132,10 +5172,12 @@ function restoreOpenDetail(saved) {
   openOverviewChart(panel, f, row);
 }
 
-const TAB_PREFETCH_DELAY_MS = 400;
-const TAB_PREBUILD_DELAY_MS = 700;
+const TAB_PREFETCH_DELAY_MS = 150;
+const TAB_PREBUILD_DELAY_MS = 300;
 const TAB_PREBUILD_SETTLE_MS = 6000;
-const TAB_PREBUILD_GAP_MS = 120;
+const TAB_PREBUILD_GAP_MS = 60;
+const TAB_PREBUILD_IDLE_MS = 1200;
+const TAB_SETTLE_POLL_MS = 60;
 
 const tabBuilds = new Map();
 
@@ -5165,9 +5207,9 @@ function plotsSettled(root, timeoutMs) {
         resolve();
         return;
       }
-      setTimeout(check, 120);
+      setTimeout(check, TAB_SETTLE_POLL_MS);
     };
-    setTimeout(check, 120);
+    setTimeout(check, TAB_SETTLE_POLL_MS);
   });
 }
 
@@ -5215,6 +5257,26 @@ async function prebuildTab(tab, token, stale) {
   if (slot.parentNode === host) host.removeChild(slot);
 }
 
+function tabPayloadJobs(fc, hours, tab) {
+  const suffix = TAB_SUFFIX[tab.id];
+  if (!suffix) return [];
+  return [
+    loadCharts(fc, hours, suffix),
+    loadText(fc, hours, `insights_${suffix}`),
+    loadCharts(fc, hours, `insights_${suffix}`),
+  ];
+}
+
+function prefetchTabPayloads(fc, hours, tabs) {
+  const jobs = [];
+  for (const tab of tabs) {
+    for (const job of tabPayloadJobs(fc, hours, tab)) {
+      jobs.push(Promise.resolve(job).catch(() => null));
+    }
+  }
+  return Promise.all(jobs);
+}
+
 function warmTabPayloads() {
   const fc = state.fc;
   const hours = state.hours;
@@ -5232,7 +5294,7 @@ function warmTabPayloads() {
 
   const idle = (fn) => {
     if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(fn, { timeout: 3000 });
+      requestIdleCallback(fn, { timeout: TAB_PREBUILD_IDLE_MS });
     } else {
       setTimeout(fn, TAB_PREBUILD_GAP_MS);
     }
@@ -5249,31 +5311,13 @@ function warmTabPayloads() {
       });
   };
 
-  const fetchOnly = () => {
+  const warmList = queue.slice();
+  setTimeout(() => {
     if (stale(token)) return;
-    const tab = queue.shift();
-    if (!tab) return;
-    const suffix = TAB_SUFFIX[tab.id];
-    if (!suffix) {
-      fetchOnly();
-      return;
-    }
-    Promise.all([
-      loadCharts(fc, hours, suffix),
-      loadText(fc, hours, `insights_${suffix}`),
-      loadCharts(fc, hours, `insights_${suffix}`),
-    ])
-      .catch(() => null)
-      .then(() => {
-        if (!stale(token)) idle(fetchOnly);
-      });
-  };
+    prefetchTabPayloads(fc, hours, warmList);
+  }, TAB_PREFETCH_DELAY_MS);
 
-  if (isMobile()) {
-    setTimeout(fetchOnly, TAB_PREFETCH_DELAY_MS);
-  } else {
-    setTimeout(build, TAB_PREBUILD_DELAY_MS);
-  }
+  if (!isMobile()) setTimeout(build, TAB_PREBUILD_DELAY_MS);
 }
 
 async function renderTab(tabId) {
@@ -5312,9 +5356,18 @@ async function renderTab(tabId) {
   body.appendChild(loading);
 
   const pending = tabBuilds.get(key);
-  const content = pending
-    ? await pending
-    : await tab.build(state.fc, state.hours);
+  let content;
+  if (pending) {
+    content = await pending;
+  } else {
+    const job = tab.build(state.fc, state.hours);
+    tabBuilds.set(key, job);
+    try {
+      content = await job;
+    } finally {
+      if (tabBuilds.get(key) === job) tabBuilds.delete(key);
+    }
+  }
   tabCache.set(key, content);
   body.innerHTML = "";
   body.appendChild(content);
