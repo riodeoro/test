@@ -5177,6 +5177,7 @@ const TAB_PREBUILD_SETTLE_MS = 6000;
 const TAB_PREBUILD_GAP_MS = 60;
 const TAB_PREBUILD_IDLE_MS = 1200;
 const TAB_SETTLE_POLL_MS = 60;
+const TAB_REVEAL_MAX_MS = 4000;
 const PREBUILD_HOLD_MS = 1400;
 const PREBUILD_RECHECK_MS = 200;
 
@@ -5217,7 +5218,7 @@ function plotsSettled(root, timeoutMs) {
       }
       setTimeout(check, TAB_SETTLE_POLL_MS);
     };
-    setTimeout(check, TAB_SETTLE_POLL_MS);
+    check();
   });
 }
 
@@ -5391,14 +5392,30 @@ async function renderTab(tabId) {
     tabCache.set(key, content);
   }
 
-  body.innerHTML = "";
+  const prevVis = content.style.visibility;
+  content.style.visibility = "hidden";
   body.appendChild(content);
-  requestAnimationFrame(() => {
-    if (stale()) return;
-    resizePlots(content);
-    sizeOverviewShell();
-    holdPrebuild(PREBUILD_HOLD_MS);
-  });
+
+  await afterPaint();
+  if (stale()) {
+    content.style.visibility = prevVis;
+    return;
+  }
+  resizePlots(content);
+  sizeOverviewShell();
+
+  await plotsSettled(content, TAB_REVEAL_MAX_MS);
+  if (stale()) {
+    content.style.visibility = prevVis;
+    return;
+  }
+  resizePlots(content);
+  sizeOverviewShell();
+
+  if (loading.parentNode === body) body.removeChild(loading);
+  content.style.visibility = prevVis;
+  holdPrebuild(PREBUILD_HOLD_MS);
+
   scheduleWarm();
   warmTabPayloads();
 }
