@@ -4130,7 +4130,8 @@ function overviewReserve(shell) {
 }
 
 function sizeOverviewShell() {
-  const shell = $main.querySelector(".wx-ov-shell");
+  const root = activePane() || $main;
+  const shell = root && root.querySelector(".wx-ov-shell");
   if (!shell) return;
   const top = shell.getBoundingClientRect().top;
   const avail = window.innerHeight - top - overviewReserve(shell);
@@ -5074,33 +5075,13 @@ function clearConnError() {
   $connError.style.display = "none";
 }
 
-function showLoading() {
-  $main.innerHTML = "";
-  const l = el("div", "al-loading");
-  l.appendChild(el("div", "spinner"));
-  l.appendChild(el("span", null, "Loading\u2026"));
-  $main.appendChild(l);
-}
-
-const tabCache = new Map();
-
-function tabCacheKey(tabId) {
-  return `${state.fc}|${state.hours}|${tabId}`;
-}
-
 const _resizeHooks = new Set();
 
 let _resizeTimer = 0;
 
-function hookCached(node) {
-  for (const cached of tabCache.values()) {
-    if (cached === node || (cached.contains && cached.contains(node))) return true;
-  }
-  return false;
-}
-
 function keepRowVisible() {
-  const panel = $main.querySelector(".wx-ov-chart");
+  const root = activePane();
+  const panel = root && root.querySelector(".wx-ov-chart");
   if (panel && panel._wxRow && panel._wxRow.isConnected) {
     revealRow(panel._wxRow);
   }
@@ -5114,7 +5095,7 @@ function runResizeHooks() {
       } catch (e) {
         void e;
       }
-    } else if (!hookCached(hook.node)) {
+    } else {
       _resizeHooks.delete(hook);
     }
   }
@@ -5147,17 +5128,19 @@ function resizePlots(node) {
 }
 
 function captureOpenDetail() {
-  const panel = $main.querySelector(".wx-ov-chart");
+  const root = activePane();
+  const panel = root && root.querySelector(".wx-ov-chart");
   if (!panel || panel.style.display === "none" || !panel._wxStation) return null;
   return { station: panel._wxStation, tab: panel._wxTab || null };
 }
 
 function restoreOpenDetail(saved) {
   if (!saved || !saved.station) return;
-  const panel = $main.querySelector(".wx-ov-chart");
+  const root = activePane();
+  const panel = root && root.querySelector(".wx-ov-chart");
   if (!panel) return;
   let row = null;
-  for (const r of $main.querySelectorAll(".wx-ov-row")) {
+  for (const r of root.querySelectorAll(".wx-ov-row")) {
     if (r._wxStation !== saved.station) continue;
     if (!row) row = r;
     if (saved.tab && r._wxFinding && r._wxFinding.tab === saved.tab) {
@@ -5173,11 +5156,8 @@ function restoreOpenDetail(saved) {
 
 const TAB_PREFETCH_DELAY_MS = 150;
 const TAB_PREBUILD_DELAY_MS = 300;
-const TAB_PREBUILD_SETTLE_MS = 6000;
 const TAB_PREBUILD_GAP_MS = 60;
 const TAB_PREBUILD_IDLE_MS = 1200;
-const TAB_SETTLE_POLL_MS = 60;
-const TAB_REVEAL_MAX_MS = 4000;
 const PREBUILD_HOLD_MS = 1400;
 const PREBUILD_RECHECK_MS = 200;
 
@@ -5188,82 +5168,91 @@ function holdPrebuild(msAhead) {
   if (until > _prebuildHoldUntil) _prebuildHoldUntil = until;
 }
 
-const tabBuilds = new Map();
-
 let _tabWarmToken = 0;
-let _prebuildHost = null;
 
-function prebuildHost() {
-  if (_prebuildHost && _prebuildHost.isConnected) return _prebuildHost;
-  const host = el("div", "wx-prebuild");
-  host.setAttribute("aria-hidden", "true");
-  host.style.cssText =
-    "position:fixed;top:0;left:-100000px;pointer-events:none;z-index:-1;";
-  document.body.appendChild(host);
-  _prebuildHost = host;
-  return host;
+let $panes = null;
+
+const tabPanes = new Map();
+
+function activePane() {
+  return $panes ? $panes.querySelector(".tab-pane.active") : null;
 }
 
-function plotsSettled(root, timeoutMs) {
-  return new Promise((resolve) => {
-    const t0 = performance.now();
-    const check = () => {
-      let pending = 0;
-      for (const p of root.querySelectorAll(".wx-plot")) {
-        if (!p._wxDrawn) pending++;
-      }
-      if (!pending || performance.now() - t0 > timeoutMs) {
-        resolve();
-        return;
-      }
-      setTimeout(check, TAB_SETTLE_POLL_MS);
-    };
-    check();
-  });
+function tabShell() {
+  if ($panes && $panes.isConnected) return $panes;
+  $main.innerHTML = "";
+  tabPanes.clear();
+
+  const bar = el("div", "al-tabs");
+  for (const t of TABS) {
+    const btn = el("div", "al-tab", t.label);
+    btn.dataset.tab = t.id;
+    btn.addEventListener("click", () => renderTab(t.id));
+    bar.appendChild(btn);
+  }
+  $main.appendChild(bar);
+
+  $panes = el("div", "tab-panes");
+  $main.appendChild($panes);
+  return $panes;
 }
 
-function prebuildWidth() {
-  const fallback = window.innerWidth || 1024;
-  if (!$main) return fallback;
-  const box = $main.clientWidth || fallback;
-  let pad = 0;
-  try {
-    const cs = window.getComputedStyle($main);
-    pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-  } catch (e) {
-    pad = 0;
-  }
-  return Math.max(320, Math.round(box - pad));
+function resetTabs() {
+  tabPanes.clear();
+  if ($panes) $panes.innerHTML = "";
 }
 
-async function prebuildTab(tab, token, stale) {
-  const key = tabCacheKey(tab.id);
-  if (tabCache.has(key) || tabBuilds.has(key)) return;
-  const host = prebuildHost();
-  host.style.width = prebuildWidth() + "px";
-  const slot = el("div", "tab-content");
-  host.appendChild(slot);
+function paneFor(tab) {
+  let entry = tabPanes.get(tab.id);
+  if (entry && entry.pane.isConnected) return entry;
+  const host = tabShell();
+  const pane = el("div", "tab-content tab-pane");
+  pane.dataset.tab = tab.id;
+  const loading = el("div", "al-loading");
+  loading.appendChild(el("div", "spinner"));
+  loading.appendChild(el("span", null, "Loading\u2026"));
+  pane.appendChild(loading);
+  host.appendChild(pane);
+  entry = { pane: pane, ready: false, job: null };
+  tabPanes.set(tab.id, entry);
+  return entry;
+}
 
-  const job = tab.build(state.fc, state.hours);
-  tabBuilds.set(key, job);
+function fillPane(tab) {
+  const entry = paneFor(tab);
+  if (entry.ready) return Promise.resolve(entry);
+  if (entry.job) return entry.job;
 
-  let content = null;
-  try {
-    content = await job;
-  } catch (e) {
-    content = null;
-  }
-  tabBuilds.delete(key);
+  const fc = state.fc;
+  const hours = state.hours;
+  entry.job = Promise.resolve()
+    .then(() => tab.build(fc, hours))
+    .then((content) => {
+      entry.job = null;
+      if (!entry.pane.isConnected) return entry;
+      if (state.fc !== fc || state.hours !== hours) return entry;
+      entry.pane.innerHTML = "";
+      entry.pane.appendChild(content);
+      entry.ready = true;
+      if (entry.pane.classList.contains("active")) sizeOverviewShell();
+      return entry;
+    })
+    .catch((e) => {
+      entry.job = null;
+      console.warn("tab build failed", tab.id, e);
+      entry.pane.innerHTML = "";
+      entry.pane.appendChild(unavailable());
+      entry.ready = true;
+      return entry;
+    });
+  return entry.job;
+}
 
-  if (content && !stale(token)) {
-    slot.appendChild(content);
-    await plotsSettled(slot, TAB_PREBUILD_SETTLE_MS);
-  }
-  if (content && content.parentNode === slot) {
-    slot.removeChild(content);
-    if (!stale(token) && !tabCache.has(key)) tabCache.set(key, content);
-  }
-  if (slot.parentNode === host) host.removeChild(slot);
+function prebuildTab(tab, token, stale) {
+  if (stale(token)) return Promise.resolve();
+  const entry = tabPanes.get(tab.id);
+  if (entry && (entry.ready || entry.job)) return Promise.resolve();
+  return fillPane(tab);
 }
 
 function tabPayloadJobs(fc, hours, tab) {
@@ -5334,90 +5323,32 @@ function warmTabPayloads() {
   if (!isMobile()) setTimeout(build, TAB_PREBUILD_DELAY_MS);
 }
 
-let _renderToken = 0;
-
-function afterPaint() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => resolve());
-    });
-  });
-}
-
-async function renderTab(tabId) {
+function renderTab(tabId) {
   const tab = TABS.find(t => t.id === tabId) || TABS[0];
   state.activeTab = tab.id;
   holdPrebuild(PREBUILD_HOLD_MS);
-  const token = ++_renderToken;
-  const stale = () => token !== _renderToken;
 
-  $main.innerHTML = "";
+  const host = tabShell();
+  const entry = paneFor(tab);
 
-  const tabsBar = el("div", "al-tabs");
-  for (const t of TABS) {
-    const btn = el("div", "al-tab" + (t.id === tab.id ? " active" : ""), t.label);
-    btn.addEventListener("click", () => renderTab(t.id));
-    tabsBar.appendChild(btn);
+  for (const btn of $main.querySelectorAll(".al-tab")) {
+    btn.classList.toggle("active", btn.dataset.tab === tab.id);
   }
-  $main.appendChild(tabsBar);
-
-  const body = el("div", "tab-content");
-  $main.appendChild(body);
-
-  const loading = el("div", "al-loading");
-  loading.appendChild(el("div", "spinner"));
-  loading.appendChild(el("span", null, "Loading\u2026"));
-  body.appendChild(loading);
-
-  const key = tabCacheKey(tab.id);
-
-  await afterPaint();
-  if (stale()) return;
-
-  let content = tabCache.get(key);
-  if (!content) {
-    const pending = tabBuilds.get(key);
-    if (pending) {
-      content = await pending;
-    } else {
-      const job = tab.build(state.fc, state.hours);
-      tabBuilds.set(key, job);
-      try {
-        content = await job;
-      } finally {
-        if (tabBuilds.get(key) === job) tabBuilds.delete(key);
-      }
-    }
-    if (stale()) return;
-    tabCache.set(key, content);
+  for (const pane of host.querySelectorAll(".tab-pane")) {
+    pane.classList.toggle("active", pane === entry.pane);
   }
 
-  const prevVis = content.style.visibility;
-  content.style.visibility = "hidden";
-  body.appendChild(content);
+  const job = entry.ready ? Promise.resolve(entry) : fillPane(tab);
 
-  await afterPaint();
-  if (stale()) {
-    content.style.visibility = prevVis;
-    return;
-  }
-  resizePlots(content);
   sizeOverviewShell();
-
-  await plotsSettled(content, TAB_REVEAL_MAX_MS);
-  if (stale()) {
-    content.style.visibility = prevVis;
-    return;
-  }
-  resizePlots(content);
-  sizeOverviewShell();
-
-  if (loading.parentNode === body) body.removeChild(loading);
-  content.style.visibility = prevVis;
-  holdPrebuild(PREBUILD_HOLD_MS);
-
   scheduleWarm();
   warmTabPayloads();
+
+  return job.then(() => {
+    if (state.activeTab !== tab.id) return;
+    resizePlots(entry.pane);
+    sizeOverviewShell();
+  });
 }
 
 let runToken = 0;
@@ -5426,7 +5357,9 @@ async function runAnalysis() {
   const fc = $fcSelect.value;
   const hours = parseInt($rangeSelect.value, 10);
   if (!fc) {
+    resetTabs();
     $main.innerHTML = "";
+    $panes = null;
     $footer.textContent = "";
     return;
   }
@@ -5439,13 +5372,12 @@ async function runAnalysis() {
   if (changed) {
     memCache.clear();
     inflight.clear();
-    tabCache.clear();
+    resetTabs();
     cancelPrefetch();
   }
 
   const token = ++runToken;
   $footer.textContent = "";
-  showLoading();
 
   await renderTab(state.activeTab || OVERVIEW_TAB);
   if (token !== runToken) return;
@@ -5478,7 +5410,7 @@ async function populateDropdown() {
 }
 
 function handleBreakpointChange() {
-  tabCache.clear();
+  resetTabs();
   if (state.fc) renderTab(state.activeTab || OVERVIEW_TAB);
 }
 
@@ -5500,7 +5432,7 @@ if ($brand) {
   $brand.style.cursor = "pointer";
   $brand.addEventListener("click", () => {
     if (!state.fc) return;
-    Promise.resolve(renderTab(OVERVIEW_TAB)).then(() => closeOpenPanels($main));
+    Promise.resolve(renderTab(OVERVIEW_TAB)).then(() => closeOpenPanels(activePane()));
     try {
       window.scrollTo(0, 0);
     } catch (e) {
