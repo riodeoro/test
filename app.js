@@ -1453,13 +1453,10 @@ function nextMountIndex(held) {
   for (let i = 0; i < _mountQueue.length; i++) {
     const job = _mountQueue[i];
     if (!job.node.isConnected || !job.node.clientWidth) continue;
-    let rank = mountRank(job);
-    if (rank > 0 && held) continue;
-    if (!mountNear(job.node)) {
-      if (rank > 0) continue;
-      rank = 2;
-    }
+    const rank = mountRank(job);
     if (rank >= bestRank) continue;
+    if (rank > 0 && held) continue;
+    if (!mountNear(job.node)) continue;
     bestRank = rank;
     best = i;
     if (rank === 0) break;
@@ -1479,10 +1476,6 @@ function pruneMounts() {
 
 function drainMounts() {
   _mountRaf = 0;
-  if (scrolling()) {
-    parkMounts();
-    return;
-  }
   const start = performance.now();
   const held = start < _prebuildHoldUntil;
   let ran = 0;
@@ -1504,15 +1497,12 @@ function drainMounts() {
     _mountRaf = requestAnimationFrame(drainMounts);
     return;
   }
-  parkMounts();
-}
-
-function parkMounts() {
-  if (_mountIdle || !_mountQueue.length) return;
-  _mountIdle = setTimeout(() => {
-    _mountIdle = 0;
-    kickMounts();
-  }, MOUNT_IDLE_MS);
+  if (!_mountIdle) {
+    _mountIdle = setTimeout(() => {
+      _mountIdle = 0;
+      kickMounts();
+    }, MOUNT_IDLE_MS);
+  }
 }
 
 function kickMounts() {
@@ -1529,40 +1519,12 @@ function kickMountsSoon() {
   });
 }
 
-const SCROLL_QUIET_MS = 160;
-
-let _scrollAt = 0;
-
-let _scrollTimer = 0;
-
-function scrolling() {
-  return performance.now() - _scrollAt < SCROLL_QUIET_MS;
-}
-
-function onScrollActivity() {
-  _scrollAt = performance.now();
-  if (_scrollTimer) return;
-  const tick = () => {
-    if (scrolling()) {
-      _scrollTimer = setTimeout(tick, SCROLL_QUIET_MS);
-      return;
-    }
-    _scrollTimer = 0;
-    kickMounts();
-    catchUpResize();
-  };
-  _scrollTimer = setTimeout(tick, SCROLL_QUIET_MS);
-}
-
 function queueMount(node, run) {
   _mountQueue.push({ node: node, run: run, born: performance.now() });
   kickMounts();
 }
 
-document.addEventListener("scroll", onScrollActivity, {
-  capture: true,
-  passive: true,
-});
+document.addEventListener("scroll", kickMountsSoon, true);
 
 window.addEventListener("resize", kickMountsSoon);
 
