@@ -1361,6 +1361,7 @@ function settleAngledTicks(pd) {
   if (xa.type !== "category" || !xa.tickangle) return;
   pd._wxTickFix = true;
   if (xa.automargin === "bottom") return;
+  if (!plotRoomy(pd)) return;
   const size = fl._size || {};
   const r = Math.max(
     (fl.margin && fl.margin.r) || 0,
@@ -1371,17 +1372,30 @@ function settleAngledTicks(pd) {
   } catch (e) {}
 }
 
+const PLOT_AREA_MIN = 24;
+
+function plotFloor(pd) {
+  const m = pd && pd._fullLayout && pd._fullLayout.margin;
+  if (!m) return PLOT_AREA_MIN;
+  return Math.round((m.t || 0) + (m.b || 0)) + PLOT_AREA_MIN;
+}
+
+function plotRoomy(pd) {
+  if (!pd || !pd._fullLayout || !pd.isConnected) return false;
+  if (!pd.clientWidth) return false;
+  return pd.clientHeight >= plotFloor(pd);
+}
+
 function fitPlot(pd) {
-  if (!pd || !pd._wxDrawn || !pd._fullLayout || !pd.clientWidth) return;
+  if (!pd || !pd._wxDrawn || !plotRoomy(pd)) return;
   fitRowAxis(pd);
   fitColorbars(pd);
 }
 
 function needsResize(pd) {
-  if (!pd || !pd._fullLayout || !pd.isConnected) return false;
+  if (!plotRoomy(pd)) return false;
   const w = pd.clientWidth;
   const h = pd.clientHeight;
-  if (!w || !h) return false;
   return (
     Math.abs(Math.round(pd._fullLayout.width || 0) - w) > 1 ||
     Math.abs(Math.round(pd._fullLayout.height || 0) - h) > 1
@@ -1563,6 +1577,7 @@ function graph(figDict, opts = {}) {
 
   const height = layout.height;
   plotDiv.style.height = height + "px";
+  wrap._wxBaseHeight = height;
 
   const mobile = isMobile();
   const config = {
@@ -1777,8 +1792,10 @@ function makeCardExpandable(c, child) {
       requestAnimationFrame(seedHeight);
       return;
     }
-    baseH = h;
-    c.style.height = h + "px";
+    const want = Math.round(graphWrap._wxBaseHeight || 0);
+    const have = plotDiv ? Math.round(plotDiv.getBoundingClientRect().height) : 0;
+    baseH = want && have < want ? h + (want - have) : h;
+    c.style.height = baseH + "px";
     c.classList.add("wx-sized");
     resize();
   };
@@ -1806,7 +1823,7 @@ function makeCardExpandable(c, child) {
     if (!plotDiv || !chrome) return false;
     const fw = Math.round(finalW - chrome[0]);
     const fh = Math.round(finalH - chrome[1]);
-    if (!(fw > 40) || !(fh > 40)) return false;
+    if (!(fw > 40) || fh < plotFloor(plotDiv)) return false;
     try {
       Plotly.relayout(plotDiv, { autosize: false, width: fw, height: fh });
     } catch (e) {
@@ -1822,6 +1839,7 @@ function makeCardExpandable(c, child) {
       delete plotDiv.layout.height;
     }
     if (graphWrap && graphWrap._wxHold) return;
+    if (!plotRoomy(plotDiv)) return;
     try {
       Plotly.relayout(plotDiv, { autosize: true });
     } catch (e) {}
