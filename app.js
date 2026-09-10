@@ -1453,13 +1453,10 @@ function nextMountIndex(held) {
   for (let i = 0; i < _mountQueue.length; i++) {
     const job = _mountQueue[i];
     if (!job.node.isConnected || !job.node.clientWidth) continue;
-    let rank = mountRank(job);
-    if (rank > 0 && held) continue;
-    if (!mountNear(job.node)) {
-      if (rank > 0) continue;
-      rank = 2;
-    }
+    const rank = mountRank(job);
     if (rank >= bestRank) continue;
+    if (rank > 0 && held) continue;
+    if (!mountNear(job.node)) continue;
     bestRank = rank;
     best = i;
     if (rank === 0) break;
@@ -1479,10 +1476,6 @@ function pruneMounts() {
 
 function drainMounts() {
   _mountRaf = 0;
-  if (scrolling()) {
-    parkMounts();
-    return;
-  }
   const start = performance.now();
   const held = start < _prebuildHoldUntil;
   let ran = 0;
@@ -1504,15 +1497,12 @@ function drainMounts() {
     _mountRaf = requestAnimationFrame(drainMounts);
     return;
   }
-  parkMounts();
-}
-
-function parkMounts() {
-  if (_mountIdle || !_mountQueue.length) return;
-  _mountIdle = setTimeout(() => {
-    _mountIdle = 0;
-    kickMounts();
-  }, MOUNT_IDLE_MS);
+  if (!_mountIdle) {
+    _mountIdle = setTimeout(() => {
+      _mountIdle = 0;
+      kickMounts();
+    }, MOUNT_IDLE_MS);
+  }
 }
 
 function kickMounts() {
@@ -1529,40 +1519,12 @@ function kickMountsSoon() {
   });
 }
 
-const SCROLL_QUIET_MS = 160;
-
-let _scrollAt = 0;
-
-let _scrollTimer = 0;
-
-function scrolling() {
-  return performance.now() - _scrollAt < SCROLL_QUIET_MS;
-}
-
-function onScrollActivity() {
-  _scrollAt = performance.now();
-  if (_scrollTimer) return;
-  const tick = () => {
-    if (scrolling()) {
-      _scrollTimer = setTimeout(tick, SCROLL_QUIET_MS);
-      return;
-    }
-    _scrollTimer = 0;
-    kickMounts();
-    catchUpResize();
-  };
-  _scrollTimer = setTimeout(tick, SCROLL_QUIET_MS);
-}
-
 function queueMount(node, run) {
   _mountQueue.push({ node: node, run: run, born: performance.now() });
   kickMounts();
 }
 
-document.addEventListener("scroll", onScrollActivity, {
-  capture: true,
-  passive: true,
-});
+document.addEventListener("scroll", kickMountsSoon, true);
 
 window.addEventListener("resize", kickMountsSoon);
 
@@ -5398,63 +5360,6 @@ function hoverPrebuild(tab) {
   }, HOVER_PREBUILD_MS);
 }
 
-const TAB_INK_MS = 460;
-
-const TAB_INK_PEAK = 0.16;
-
-const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
-
-function tabInk(btn, ev) {
-  if (REDUCED_MOTION.matches) return;
-  const r = btn.getBoundingClientRect();
-  if (!r.width || !r.height) return;
-  const inside =
-    ev && typeof ev.clientX === "number" && (ev.clientX || ev.clientY);
-  const x = inside ? ev.clientX - r.left : r.width / 2;
-  const y = inside ? ev.clientY - r.top : r.height / 2;
-  const reach = Math.max(
-    Math.hypot(x, y),
-    Math.hypot(r.width - x, y),
-    Math.hypot(x, r.height - y),
-    Math.hypot(r.width - x, r.height - y)
-  );
-  const size = Math.max(28, Math.ceil(reach * 2));
-  const old = btn.querySelector(".al-tab-ink");
-  if (old) old.remove();
-  const ink = el("span", "al-tab-ink");
-  ink.style.width = size + "px";
-  ink.style.height = size + "px";
-  ink.style.left = Math.round(x) + "px";
-  ink.style.top = Math.round(y) + "px";
-  if (typeof ink.animate !== "function") return;
-  btn.classList.add("al-inking");
-  btn.appendChild(ink);
-  const done = () => {
-    ink.remove();
-    if (!btn.querySelector(".al-tab-ink")) btn.classList.remove("al-inking");
-  };
-  let anim = null;
-  try {
-    anim = ink.animate(
-      [
-        { transform: "translate(-50%, -50%) scale(0.3)", opacity: TAB_INK_PEAK },
-        { transform: "translate(-50%, -50%) scale(1)", opacity: 0 },
-      ],
-      {
-        duration: TAB_INK_MS,
-        easing: "cubic-bezier(0.22, 0.61, 0.36, 1)",
-        fill: "forwards",
-      }
-    );
-  } catch (e) {
-    void e;
-    done();
-    return;
-  }
-  anim.addEventListener("finish", done);
-  anim.addEventListener("cancel", done);
-}
-
 function tabShell() {
   if ($panes && $panes.isConnected) return $panes;
   $main.innerHTML = "";
@@ -5464,8 +5369,7 @@ function tabShell() {
   for (const t of TABS) {
     const btn = el("div", "al-tab", t.label);
     btn.dataset.tab = t.id;
-    btn.addEventListener("click", (ev) => {
-      tabInk(btn, ev);
+    btn.addEventListener("click", () => {
       cancelHoverPrebuild();
       renderTab(t.id);
     });
