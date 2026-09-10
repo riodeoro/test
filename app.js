@@ -1515,6 +1515,7 @@ function kickMountsSoon() {
   _mountKick = requestAnimationFrame(() => {
     _mountKick = 0;
     kickMounts();
+    catchUpResize();
   });
 }
 
@@ -1581,7 +1582,7 @@ function graph(figDict, opts = {}) {
 
   const mobile = isMobile();
   const config = {
-    responsive: true,
+    responsive: false,
     displaylogo: false,
     displayModeBar: (mobile || opts.noModeBar) ? false : "hover",
   };
@@ -5230,20 +5231,36 @@ function keepRowVisible() {
   }
 }
 
+let _resizeDirty = false;
+
 function runResizeHooks() {
+  const active = activePane();
+  _resizeDirty = false;
   for (const hook of Array.from(_resizeHooks)) {
-    if (hook.node.isConnected) {
-      try {
-        hook.run();
-      } catch (e) {
-        void e;
-      }
-    } else {
+    if (!hook.node.isConnected) {
       _resizeHooks.delete(hook);
+      continue;
+    }
+    const pane = hook.node.closest ? hook.node.closest(".tab-pane") : null;
+    if (pane && pane !== active) {
+      _resizeDirty = true;
+      continue;
+    }
+    if (!mountNear(hook.node)) {
+      _resizeDirty = true;
+      continue;
+    }
+    try {
+      hook.run();
+    } catch (e) {
+      void e;
     }
   }
-  sizeOverviewShell();
-  keepRowVisible();
+}
+
+function catchUpResize() {
+  if (!_resizeDirty) return;
+  runResizeHooks();
 }
 
 function watchResize(node, run) {
@@ -5255,6 +5272,8 @@ window.addEventListener("resize", () => {
   _resizeTimer = setTimeout(() => {
     _resizeTimer = 0;
     runResizeHooks();
+    sizeOverviewShell();
+    keepRowVisible();
   }, 140);
 });
 
@@ -5525,6 +5544,7 @@ function renderTab(tabId) {
     return afterPaint().then(() => {
       if (state.activeTab !== tab.id) return;
       resizePlots(entry.pane);
+      catchUpResize();
       sizeOverviewShell();
       kickMounts();
     });
