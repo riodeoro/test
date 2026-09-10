@@ -1377,6 +1377,27 @@ function fitPlot(pd) {
   fitColorbars(pd);
 }
 
+function needsResize(pd) {
+  if (!pd || !pd._fullLayout || !pd.isConnected) return false;
+  const w = pd.clientWidth;
+  const h = pd.clientHeight;
+  if (!w || !h) return false;
+  return (
+    Math.abs(Math.round(pd._fullLayout.width || 0) - w) > 1 ||
+    Math.abs(Math.round(pd._fullLayout.height || 0) - h) > 1
+  );
+}
+
+function syncSize(pd) {
+  if (!needsResize(pd)) return false;
+  try {
+    Plotly.Plots.resize(pd);
+  } catch (e) {
+    void e;
+  }
+  return true;
+}
+
 function afterPaint() {
   return new Promise((resolve) => {
     requestAnimationFrame(() => setTimeout(resolve, 0));
@@ -1444,6 +1465,25 @@ function graph(figDict, opts = {}) {
   wrap.appendChild(plotDiv);
   wrap._wxPlotDiv = plotDiv;
 
+  const drawHooks = [];
+  let drawFired = false;
+  const fireDrawn = () => {
+    if (drawFired) return;
+    drawFired = true;
+    while (drawHooks.length) {
+      const fn = drawHooks.shift();
+      try {
+        fn();
+      } catch (e) {
+        void e;
+      }
+    }
+  };
+  wrap._wxAfterDraw = (fn) => {
+    if (drawFired) fn();
+    else drawHooks.push(fn);
+  };
+
   let fitTimer = 0;
   const scheduleFit = () => {
     if (fitTimer) clearTimeout(fitTimer);
@@ -1457,13 +1497,11 @@ function graph(figDict, opts = {}) {
   wrap._wxResize = () => {
     if (wrap._wxHold) return;
     if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
-    if (plotDiv.isConnected && plotDiv.clientWidth) {
-      try { Plotly.Plots.resize(plotDiv); } catch (e) {}
-      scheduleFit();
-    }
+    if (syncSize(plotDiv)) scheduleFit();
   };
   if (!figDict) {
     wrap.appendChild(el("div", "unavailable", "Chart data unavailable."));
+    fireDrawn();
     return wrap;
   }
 
@@ -1535,7 +1573,7 @@ function graph(figDict, opts = {}) {
       const next = mergeView(prepared.layout, captureView(plotDiv));
       Plotly.react(plotDiv, prepared.data, next, config)
         .then(() => {
-          Plotly.Plots.resize(plotDiv);
+          syncSize(plotDiv);
           fitPlot(plotDiv);
         });
     } else {
@@ -1544,12 +1582,13 @@ function graph(figDict, opts = {}) {
           mounted = true;
           plotDiv._wxDrawn = true;
           plotDiv._wxWidth = plotDiv.clientWidth;
+          fireDrawn();
           settleAngledTicks(plotDiv);
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
             plotDiv.on("plotly_restyle", syncScorecards);
           }
-          Plotly.Plots.resize(plotDiv);
+          syncSize(plotDiv);
           fitPlot(plotDiv);
         });
     }
@@ -1586,9 +1625,7 @@ function graph(figDict, opts = {}) {
 
   watchResize(plotDiv, () => {
     if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
-    if (!plotDiv.clientWidth) return;
-    try { Plotly.Plots.resize(plotDiv); } catch (e) {}
-    scheduleFit();
+    if (syncSize(plotDiv)) scheduleFit();
   });
 
   return wrap;
@@ -1657,9 +1694,7 @@ function siblingGraphResize(sib) {
   if (gw && typeof gw._wxResize === "function") return gw._wxResize;
   const pd = sib.querySelector(".wx-plot");
   return () => {
-    if (pd && pd.clientWidth) {
-      try { Plotly.Plots.resize(pd); } catch (e) {}
-    }
+    syncSize(pd);
   };
 }
 
@@ -1691,9 +1726,7 @@ function makeCardExpandable(c, child) {
 
   const plotDiv = graphWrap._wxPlotDiv || graphWrap.querySelector(".wx-plot");
   const resize = graphWrap._wxResize || (() => {
-    if (plotDiv && plotDiv.clientWidth) {
-      try { Plotly.Plots.resize(plotDiv); } catch (e) {}
-    }
+    syncSize(plotDiv);
   });
 
   let baseH = 0;
@@ -1714,7 +1747,11 @@ function makeCardExpandable(c, child) {
     c.style.height = h + "px";
     resize();
   };
-  requestAnimationFrame(seedHeight);
+  if (typeof graphWrap._wxAfterDraw === "function") {
+    graphWrap._wxAfterDraw(() => requestAnimationFrame(seedHeight));
+  } else {
+    requestAnimationFrame(seedHeight);
+  }
 
   const rowOf = () => {
     const r = c.parentNode;
@@ -5176,10 +5213,8 @@ function resizePlots(node) {
   if (!node || !node.querySelectorAll) return;
   for (const pd of node.querySelectorAll(".wx-plot")) {
     if (!pd._wxDrawn || !pd._fullLayout) continue;
-    const w = pd.clientWidth;
-    if (!w || pd._wxWidth === w) continue;
-    pd._wxWidth = w;
-    try { Plotly.Plots.resize(pd); } catch (e) {}
+    if (!syncSize(pd)) continue;
+    pd._wxWidth = pd.clientWidth;
     fitPlot(pd);
   }
 }
