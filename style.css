@@ -467,20 +467,31 @@ pre { line-height: 1.5; }
   color: var(--text);
   font-weight: 600;
   border-bottom: 2px solid var(--accent);
+  transition: none;
 }
 
 .main-content { padding: 8px 20px 20px; }
 .tab-content { padding: 12px 0; }
-.tab-panes { position: relative; }
+.tab-panes {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.tab-panes > .tab-pane {
+  grid-area: 1 / 1;
+  min-width: 0;
+  align-self: start;
+}
 .tab-pane:not(.active) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 0;
-  overflow: hidden;
-  visibility: hidden;
-  pointer-events: none;
+  content-visibility: hidden;
+}
+@supports not (content-visibility: hidden) {
+  .tab-pane:not(.active) {
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    pointer-events: none;
+  }
 }
 .wx-card {
   background: #ffffff;
