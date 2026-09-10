@@ -1377,6 +1377,66 @@ function fitPlot(pd) {
   fitColorbars(pd);
 }
 
+function afterPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
+const MOUNT_BUDGET_MS = 8;
+
+const MOUNT_MAX_TRIES = 900;
+
+const _mountQueue = [];
+
+let _mountRaf = 0;
+
+function mountRank(job) {
+  const pane = job.node.closest ? job.node.closest(".tab-pane") : null;
+  if (!pane) return 0;
+  return pane.classList.contains("active") ? 0 : 1;
+}
+
+function nextMountIndex() {
+  let best = -1;
+  let bestRank = 99;
+  for (let i = 0; i < _mountQueue.length; i++) {
+    const job = _mountQueue[i];
+    if (!job.node.isConnected || !job.node.clientWidth) continue;
+    const rank = mountRank(job);
+    if (rank >= bestRank) continue;
+    bestRank = rank;
+    best = i;
+    if (rank === 0) break;
+  }
+  return best;
+}
+
+function drainMounts() {
+  _mountRaf = 0;
+  const start = performance.now();
+  for (;;) {
+    const idx = nextMountIndex();
+    if (idx < 0) break;
+    const job = _mountQueue.splice(idx, 1)[0];
+    try {
+      job.run();
+    } catch (e) {
+      void e;
+    }
+    if (performance.now() - start >= MOUNT_BUDGET_MS) break;
+  }
+  for (let i = _mountQueue.length - 1; i >= 0; i--) {
+    if (_mountQueue[i].tries++ >= MOUNT_MAX_TRIES) _mountQueue.splice(i, 1);
+  }
+  if (_mountQueue.length) _mountRaf = requestAnimationFrame(drainMounts);
+}
+
+function queueMount(node, run) {
+  _mountQueue.push({ node: node, run: run, tries: 0 });
+  if (!_mountRaf) _mountRaf = requestAnimationFrame(drainMounts);
+}
+
 function graph(figDict, opts = {}) {
   const wrap = el("div", "wx-graph");
   const plotDiv = el("div", "wx-plot");
@@ -1516,18 +1576,13 @@ function graph(figDict, opts = {}) {
     }
   }
 
-  const mount = () => {
-    if (!plotDiv.isConnected || plotDiv.clientWidth === 0) {
-      requestAnimationFrame(mount);
-      return;
-    }
+  queueMount(plotDiv, () => {
     try {
       draw();
     } catch (e) {
       plotDiv.appendChild(el("div", "unavailable", "Chart failed to render."));
     }
-  };
-  requestAnimationFrame(mount);
+  });
 
   watchResize(plotDiv, () => {
     if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
@@ -5011,6 +5066,8 @@ function markStationCursors(pd, known) {
   return true;
 }
 
+const GRID_WIRE_MAX_TRIES = 900;
+
 function wireGridStationClicks(wrap) {
   const known = new Set(wrap._wxStations || []);
   let tries = 0;
@@ -5039,7 +5096,7 @@ function wireGridStationClicks(wrap) {
       wireGridZoom(wrap);
       return;
     }
-    if (tries++ < 180) requestAnimationFrame(poll);
+    if (tries++ < GRID_WIRE_MAX_TRIES) requestAnimationFrame(poll);
   };
   requestAnimationFrame(poll);
 }
@@ -5255,10 +5312,14 @@ function fillPane(tab) {
 
   const fc = state.fc;
   const hours = state.hours;
-  entry.job = Promise.resolve()
-    .then(() => tab.build(fc, hours))
+  entry.job = afterPaint()
+    .then(() => {
+      if (state.fc !== fc || state.hours !== hours) return null;
+      return tab.build(fc, hours);
+    })
     .then((content) => {
       entry.job = null;
+      if (!content) return entry;
       if (!entry.pane.isConnected) return entry;
       if (state.fc !== fc || state.hours !== hours) return entry;
       entry.pane.innerHTML = "";
