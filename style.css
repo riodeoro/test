@@ -447,7 +447,6 @@ pre { line-height: 1.5; }
 }
 .al-tabs::-webkit-scrollbar { display: none; }
 .al-tab {
-  position: relative;
   flex: 1 1 0;
   text-align: center;
   font-family: inherit;
@@ -464,19 +463,6 @@ pre { line-height: 1.5; }
   transition: color 0.12s ease;
 }
 .al-tab:hover { color: var(--text); }
-.al-tab.al-inking { overflow: hidden; }
-.al-tab-ink {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    circle closest-side,
-    var(--accent) 0%,
-    rgba(37, 99, 235, 0) 72%
-  );
-  will-change: transform, opacity;
-}
 .al-tab.active {
   color: var(--text);
   font-weight: 600;
