@@ -1406,11 +1406,19 @@ function afterPaint() {
 
 const MOUNT_BUDGET_MS = 8;
 
-const MOUNT_MAX_TRIES = 900;
+const MOUNT_MARGIN_PX = 700;
+
+const MOUNT_IDLE_MS = 250;
+
+const MOUNT_ORPHAN_MS = 20000;
 
 const _mountQueue = [];
 
 let _mountRaf = 0;
+
+let _mountIdle = 0;
+
+let _mountKick = 0;
 
 function mountRank(job) {
   const pane = job.node.closest ? job.node.closest(".tab-pane") : null;
@@ -1418,7 +1426,14 @@ function mountRank(job) {
   return pane.classList.contains("active") ? 0 : 1;
 }
 
-function nextMountIndex() {
+function mountNear(node) {
+  const r = node.getBoundingClientRect();
+  if (!r.height && !r.width) return false;
+  const h = window.innerHeight || 0;
+  return r.bottom > -MOUNT_MARGIN_PX && r.top < h + MOUNT_MARGIN_PX;
+}
+
+function nextMountIndex(held) {
   let best = -1;
   let bestRank = 99;
   for (let i = 0; i < _mountQueue.length; i++) {
@@ -1426,6 +1441,8 @@ function nextMountIndex() {
     if (!job.node.isConnected || !job.node.clientWidth) continue;
     const rank = mountRank(job);
     if (rank >= bestRank) continue;
+    if (rank > 0 && held) continue;
+    if (!mountNear(job.node)) continue;
     bestRank = rank;
     best = i;
     if (rank === 0) break;
@@ -1433,11 +1450,23 @@ function nextMountIndex() {
   return best;
 }
 
+function pruneMounts() {
+  const now = performance.now();
+  for (let i = _mountQueue.length - 1; i >= 0; i--) {
+    const job = _mountQueue[i];
+    if (job.node.isConnected) continue;
+    if (now - job.born < MOUNT_ORPHAN_MS) continue;
+    _mountQueue.splice(i, 1);
+  }
+}
+
 function drainMounts() {
   _mountRaf = 0;
   const start = performance.now();
+  const held = start < _prebuildHoldUntil;
+  let ran = 0;
   for (;;) {
-    const idx = nextMountIndex();
+    const idx = nextMountIndex(held);
     if (idx < 0) break;
     const job = _mountQueue.splice(idx, 1)[0];
     try {
@@ -1445,18 +1474,44 @@ function drainMounts() {
     } catch (e) {
       void e;
     }
+    ran++;
     if (performance.now() - start >= MOUNT_BUDGET_MS) break;
   }
-  for (let i = _mountQueue.length - 1; i >= 0; i--) {
-    if (_mountQueue[i].tries++ >= MOUNT_MAX_TRIES) _mountQueue.splice(i, 1);
+  pruneMounts();
+  if (!_mountQueue.length) return;
+  if (ran) {
+    _mountRaf = requestAnimationFrame(drainMounts);
+    return;
   }
-  if (_mountQueue.length) _mountRaf = requestAnimationFrame(drainMounts);
+  if (!_mountIdle) {
+    _mountIdle = setTimeout(() => {
+      _mountIdle = 0;
+      kickMounts();
+    }, MOUNT_IDLE_MS);
+  }
+}
+
+function kickMounts() {
+  if (!_mountQueue.length || _mountRaf) return;
+  _mountRaf = requestAnimationFrame(drainMounts);
+}
+
+function kickMountsSoon() {
+  if (_mountKick) return;
+  _mountKick = requestAnimationFrame(() => {
+    _mountKick = 0;
+    kickMounts();
+  });
 }
 
 function queueMount(node, run) {
-  _mountQueue.push({ node: node, run: run, tries: 0 });
-  if (!_mountRaf) _mountRaf = requestAnimationFrame(drainMounts);
+  _mountQueue.push({ node: node, run: run, born: performance.now() });
+  kickMounts();
 }
+
+document.addEventListener("scroll", kickMountsSoon, true);
+
+window.addEventListener("resize", kickMountsSoon);
 
 function graph(figDict, opts = {}) {
   const wrap = el("div", "wx-graph");
@@ -1464,25 +1519,6 @@ function graph(figDict, opts = {}) {
   plotDiv.style.width = "100%";
   wrap.appendChild(plotDiv);
   wrap._wxPlotDiv = plotDiv;
-
-  const drawHooks = [];
-  let drawFired = false;
-  const fireDrawn = () => {
-    if (drawFired) return;
-    drawFired = true;
-    while (drawHooks.length) {
-      const fn = drawHooks.shift();
-      try {
-        fn();
-      } catch (e) {
-        void e;
-      }
-    }
-  };
-  wrap._wxAfterDraw = (fn) => {
-    if (drawFired) fn();
-    else drawHooks.push(fn);
-  };
 
   let fitTimer = 0;
   const scheduleFit = () => {
@@ -1501,7 +1537,6 @@ function graph(figDict, opts = {}) {
   };
   if (!figDict) {
     wrap.appendChild(el("div", "unavailable", "Chart data unavailable."));
-    fireDrawn();
     return wrap;
   }
 
@@ -1582,7 +1617,6 @@ function graph(figDict, opts = {}) {
           mounted = true;
           plotDiv._wxDrawn = true;
           plotDiv._wxWidth = plotDiv.clientWidth;
-          fireDrawn();
           settleAngledTicks(plotDiv);
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
@@ -1650,7 +1684,7 @@ function ensureCardExpandStyles() {
     "display:flex;flex-direction:column;",
     "transition:border-color .2s ease,box-shadow .24s ease;}",
     ".wx-expandable > .wx-graph{flex:1 1 auto;min-height:0;}",
-    ".wx-expandable > .wx-graph > .wx-plot{height:100%!important;}",
+    ".wx-expandable.wx-sized > .wx-graph > .wx-plot{height:100%!important;}",
     ".wx-expandable.wx-expanded{border-color:#dcd9d4;box-shadow:0 6px 22px rgba(0,0,0,.07);}",
     ".wx-card-collapsed{opacity:0;overflow:hidden;pointer-events:none;",
     "padding-left:0;padding-right:0;border-left-width:0;border-right-width:0;}",
@@ -1745,13 +1779,10 @@ function makeCardExpandable(c, child) {
     }
     baseH = h;
     c.style.height = h + "px";
+    c.classList.add("wx-sized");
     resize();
   };
-  if (typeof graphWrap._wxAfterDraw === "function") {
-    graphWrap._wxAfterDraw(() => requestAnimationFrame(seedHeight));
-  } else {
-    requestAnimationFrame(seedHeight);
-  }
+  requestAnimationFrame(seedHeight);
 
   const rowOf = () => {
     const r = c.parentNode;
@@ -5467,13 +5498,18 @@ function renderTab(tabId) {
   const job = entry.ready ? Promise.resolve(entry) : fillPane(tab);
 
   sizeOverviewShell();
+  kickMountsSoon();
   scheduleWarm();
   warmTabPayloads();
 
   return job.then(() => {
     if (state.activeTab !== tab.id) return;
-    resizePlots(entry.pane);
-    sizeOverviewShell();
+    return afterPaint().then(() => {
+      if (state.activeTab !== tab.id) return;
+      resizePlots(entry.pane);
+      sizeOverviewShell();
+      kickMounts();
+    });
   });
 }
 
