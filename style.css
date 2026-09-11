@@ -692,12 +692,16 @@ pre { line-height: 1.5; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.wx-plot { position: relative; }
+.wx-plot > .plot-container { transition: opacity 0.18s ease; }
+.wx-plot.wx-pending > .plot-container { opacity: 0; }
 .wx-plot-wait {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  min-height: 48px;
   opacity: 0;
   pointer-events: none;
   animation: wx-wait-in 0.24s ease 0.16s forwards;
