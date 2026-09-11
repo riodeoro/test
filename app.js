@@ -74,6 +74,68 @@ function held() {
   return performance.now() < _prebuildHoldUntil;
 }
 
+const SELECT_HOLD_MS = 1500;
+
+let _selectHoldUntil = 0;
+
+let _selectTimer = 0;
+
+const _selectWaiters = new Set();
+
+function selectHeld() {
+  return performance.now() < _selectHoldUntil;
+}
+
+function flushSelectWaiters() {
+  _selectTimer = 0;
+  const wait = _selectHoldUntil - performance.now();
+  if (wait > 0) {
+    _selectTimer = setTimeout(flushSelectWaiters, wait + 20);
+    return;
+  }
+  const fns = Array.from(_selectWaiters);
+  _selectWaiters.clear();
+  for (const fn of fns) {
+    try {
+      fn();
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
+function waitSelect(fn) {
+  if (!selectHeld()) return false;
+  _selectWaiters.add(fn);
+  if (!_selectTimer) {
+    _selectTimer = setTimeout(
+      flushSelectWaiters,
+      _selectHoldUntil - performance.now() + 20
+    );
+  }
+  return true;
+}
+
+function selectFree() {
+  return new Promise((resolve) => {
+    if (!waitSelect(resolve)) resolve();
+  });
+}
+
+function holdForSelect() {
+  _selectHoldUntil = performance.now() + SELECT_HOLD_MS;
+  holdPrebuild(SELECT_HOLD_MS);
+}
+
+function releaseSelect() {
+  _selectHoldUntil = 0;
+  if (_selectTimer) {
+    clearTimeout(_selectTimer);
+    _selectTimer = 0;
+  }
+  if (_selectWaiters.size) flushSelectWaiters();
+}
+
 function whenFree(fn) {
   const attempt = () => {
     const wait = _prebuildHoldUntil - performance.now();
@@ -1612,10 +1674,11 @@ function runMount(idx) {
 
 function drainMounts() {
   _mountFront = false;
+  if (waitSelect(kickMounts)) return;
   const start = performance.now();
   let yielded = false;
   for (;;) {
-    if (inputPending()) {
+    if (inputPending() || selectHeld()) {
       yielded = true;
       break;
     }
@@ -1630,7 +1693,7 @@ function drainMounts() {
   pruneMounts();
   if (!_mountQueue.length) return;
   if (yielded) {
-    kickMounts();
+    if (!waitSelect(kickMounts)) kickMounts();
     return;
   }
   scheduleMountPoll();
@@ -1954,6 +2017,7 @@ function kickSeeds() {
 
 function flushSeeds() {
   _seedRaf = 0;
+  if (waitSelect(kickSeeds)) return;
   const now = performance.now();
   const jobs = _seedQueue.splice(0);
   const writes = [];
@@ -5621,6 +5685,7 @@ function fillPane(tab) {
   const fc = state.fc;
   const hours = state.hours;
   entry.job = afterPaint()
+    .then(selectFree)
     .then(() => {
       if (state.fc !== fc || state.hours !== hours) return null;
       return tab.build(fc, hours);
@@ -5722,6 +5787,7 @@ function unparkPlots(pane, plots) {
       for (const pd of queue || plots) pd.style.contentVisibility = "";
       return;
     }
+    if (waitSelect(() => requestAnimationFrame(step))) return;
     if (!queue) {
       queue = plots
         .map((pd, i) => ({ pd: pd, i: i, gap: viewportGap(pd) }))
@@ -5817,7 +5883,7 @@ function renderTab(tabId) {
 
   return Promise.all([job, reveal]).then((res) => {
     if (!res[1] || state.activeTab !== tab.id) return;
-    return afterPaint().then(() => {
+    return afterPaint().then(selectFree).then(() => {
       if (state.activeTab !== tab.id) return;
       resizePlots(entry.pane);
       catchUpResize();
@@ -5917,6 +5983,23 @@ if ($brand) {
     }
   });
 }
+
+for (const sel of [$fcSelect, $rangeSelect]) {
+  sel.addEventListener("pointerdown", holdForSelect);
+  sel.addEventListener("keydown", holdForSelect);
+  sel.addEventListener("change", releaseSelect);
+  sel.addEventListener("blur", releaseSelect);
+}
+
+document.addEventListener(
+  "pointerdown",
+  (ev) => {
+    const t = ev.target;
+    if ($fcSelect.contains(t) || $rangeSelect.contains(t)) return;
+    releaseSelect();
+  },
+  true
+);
 
 $fcSelect.addEventListener("change", runAnalysis);
 $rangeSelect.addEventListener("change", runAnalysis);
