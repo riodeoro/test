@@ -5693,7 +5693,49 @@ function showPane(host, entry) {
   }
 }
 
-function revealPane(host, entry, frames, built) {
+function parkPlots(pane) {
+  const out = [];
+  for (const pd of pane.querySelectorAll(".wx-plot")) {
+    if (!pd._wxDrawn) continue;
+    pd.style.contentVisibility = "hidden";
+    out.push(pd);
+  }
+  return out;
+}
+
+function viewportGap(node) {
+  const r = node.getBoundingClientRect();
+  const h = window.innerHeight || 0;
+  if (r.bottom < 0) return -r.bottom;
+  if (r.top > h) return r.top - h;
+  return 0;
+}
+
+function unparkPlots(pane, plots) {
+  const token = (pane._wxParkToken || 0) + 1;
+  pane._wxParkToken = token;
+  if (!plots.length) return;
+  let queue = null;
+  const step = () => {
+    if (pane._wxParkToken !== token) return;
+    if (!pane.isConnected || !pane.classList.contains("active")) {
+      for (const pd of queue || plots) pd.style.contentVisibility = "";
+      return;
+    }
+    if (!queue) {
+      queue = plots
+        .map((pd, i) => ({ pd: pd, i: i, gap: viewportGap(pd) }))
+        .sort((a, b) => a.gap - b.gap || a.i - b.i)
+        .map((item) => item.pd);
+    }
+    const pd = queue.shift();
+    if (pd) pd.style.contentVisibility = "";
+    if (queue.length) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function revealPane(host, entry, frames, built, staged) {
   const token = ++_revealToken;
   return new Promise((resolve) => {
     const apply = () => {
@@ -5701,7 +5743,9 @@ function revealPane(host, entry, frames, built) {
         resolve(false);
         return;
       }
+      const parked = staged ? parkPlots(entry.pane) : null;
       showPane(host, entry);
+      if (parked) unparkPlots(entry.pane, parked);
       resolve(true);
     };
     if (built) {
@@ -5748,10 +5792,17 @@ function renderTab(tabId) {
   holdPrebuild(PREBUILD_HOLD_MS);
   markTabButtons(tab.id);
 
-  const frames = !current || current === entry.pane ? 0 : entry.ready ? 2 : 1;
-  const cold = !!current && current !== entry.pane && !entry.ready;
+  const moving = !!current && current !== entry.pane;
+  const frames = moving ? 1 : 0;
+  const cold = moving && !entry.ready;
   const job = entry.ready ? Promise.resolve(entry) : fillPane(tab);
-  const reveal = revealPane(host, entry, frames, cold ? job : null);
+  const reveal = revealPane(
+    host,
+    entry,
+    frames,
+    cold ? job : null,
+    moving && entry.ready
+  );
 
   reveal.then((ok) => {
     if (!ok) return;
