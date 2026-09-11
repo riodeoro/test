@@ -124,6 +124,8 @@ const memCache = new Map();
 
 const rawCache = new Map();
 
+const GRID_WEBGL = true;
+
 const GL_TRACE_TYPES = {
   scattergl: "scatter",
   scatterpolargl: "scatterpolar",
@@ -2399,6 +2401,13 @@ function isAlertTrace(tr) {
   return tr.mode === "markers" && !tr.hovertemplate;
 }
 
+function gridTraceToGl(tr) {
+  if (!GRID_WEBGL || !tr || isAlertTrace(tr)) return tr;
+  if (tr.type && tr.type !== "scatter") return tr;
+  if (tr.fill === "toself" || tr.hoveron === "fills") return tr;
+  return Object.assign({}, tr, { type: "scattergl" });
+}
+
 function bandHoverBody(text) {
   const parts = String(text).split("<br>");
   const rest = parts[0].indexOf("<b>") === 0 ? parts.slice(1) : parts;
@@ -3246,7 +3255,9 @@ function stationGrid(c, views) {
     fills = gridZoneFills(fig, cells);
     rowPx = gridRowPx(fig, cells);
     gridCol = gridColumnName(fig);
-    if (fig && Array.isArray(fig.data)) fig.data = fig.data.map(unifiedBandTrace);
+    if (fig && Array.isArray(fig.data)) {
+      fig.data = fig.data.map((tr) => gridTraceToGl(unifiedBandTrace(tr)));
+    }
     if (!baseSlots) {
       baseSlots = new Map();
       for (const cell of cells) {
@@ -5608,7 +5619,34 @@ function tabShell() {
   return $panes;
 }
 
+function releaseGlPlots(root) {
+  if (!root || !window.Plotly) return;
+  for (const pd of root.querySelectorAll(".js-plotly-plot")) {
+    const contexts = [];
+    for (const cv of pd.querySelectorAll("canvas.gl-canvas")) {
+      const d = cv.__data__;
+      const gl = d && d.regl && d.regl._gl;
+      if (gl) contexts.push(gl);
+    }
+    if (!contexts.length) continue;
+    try {
+      Plotly.purge(pd);
+    } catch (e) {
+      void e;
+    }
+    for (const gl of contexts) {
+      try {
+        const ext = gl.getExtension("WEBGL_lose_context");
+        if (ext) ext.loseContext();
+      } catch (e) {
+        void e;
+      }
+    }
+  }
+}
+
 function resetTabs() {
+  releaseGlPlots($panes);
   tabPanes.clear();
   if ($panes) $panes.innerHTML = "";
   for (let i = _mountQueue.length - 1; i >= 0; i--) {
