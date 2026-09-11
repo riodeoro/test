@@ -8,6 +8,90 @@ const CHART_WINDOWS = [24, 48, 72, 168, 336, 720, 1440, 2160, 4380];
 const MOBILE_QUERY = window.matchMedia("(max-width: 768px)");
 const isMobile = () => MOBILE_QUERY.matches;
 
+const _taskQueue = [];
+
+const _taskChannel =
+  typeof MessageChannel === "function" ? new MessageChannel() : null;
+
+if (_taskChannel) {
+  _taskChannel.port1.onmessage = () => {
+    const fn = _taskQueue.shift();
+    if (fn) fn();
+  };
+}
+
+function nextTask(fn) {
+  if (!_taskChannel) {
+    setTimeout(fn, 0);
+    return;
+  }
+  _taskQueue.push(fn);
+  _taskChannel.port2.postMessage(0);
+}
+
+function afterFrame(fn) {
+  requestAnimationFrame(() => nextTask(fn));
+}
+
+function afterPaint() {
+  return new Promise((resolve) => afterFrame(resolve));
+}
+
+function whenIdle(fn, timeout) {
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(fn, { timeout: timeout });
+  } else {
+    setTimeout(fn, 32);
+  }
+}
+
+function inputPending() {
+  const s = typeof navigator !== "undefined" ? navigator.scheduling : null;
+  if (!s || typeof s.isInputPending !== "function") return false;
+  try {
+    return s.isInputPending();
+  } catch (e) {
+    return false;
+  }
+}
+
+const PREBUILD_HOLD_MS = 1400;
+
+const PREBUILD_RECHECK_MS = 200;
+
+const TAB_INTENT_HOLD_MS = 700;
+
+const FREE_IDLE_TIMEOUT_MS = 1500;
+
+let _prebuildHoldUntil = 0;
+
+function holdPrebuild(msAhead) {
+  const until = performance.now() + (msAhead || PREBUILD_HOLD_MS);
+  if (until > _prebuildHoldUntil) _prebuildHoldUntil = until;
+}
+
+function held() {
+  return performance.now() < _prebuildHoldUntil;
+}
+
+function whenFree(fn) {
+  const attempt = () => {
+    const wait = _prebuildHoldUntil - performance.now();
+    if (wait > 0) {
+      setTimeout(attempt, Math.min(wait + 20, PREBUILD_RECHECK_MS));
+      return;
+    }
+    whenIdle(() => {
+      if (held() || inputPending()) {
+        attempt();
+        return;
+      }
+      fn();
+    }, FREE_IDLE_TIMEOUT_MS);
+  };
+  attempt();
+}
+
 function resolveChartWindow(hours) {
   for (const w of CHART_WINDOWS) if (w >= hours) return w;
   return null;
@@ -18,6 +102,8 @@ function safeFc(fcName) {
 }
 
 const memCache = new Map();
+
+const rawCache = new Map();
 
 const GL_TRACE_TYPES = {
   scattergl: "scatter",
@@ -43,15 +129,35 @@ function stripWebgl(bundle) {
 
 const inflight = new Map();
 
-function fetchShared(filename, read, onError) {
+function fetchBody(filename) {
+  const hit = rawCache.get(filename);
+  if (hit) return hit;
+  const job = fetch(BUCKET_BASE + filename, { cache: "default" }).then((res) =>
+    res.ok ? res.text() : null
+  );
+  rawCache.set(filename, job);
+  job.catch(() => {
+    if (rawCache.get(filename) === job) rawCache.delete(filename);
+  });
+  return job;
+}
+
+function warmFile(filename) {
+  if (!filename) return;
+  if (memCache.has(filename) || inflight.has(filename) || rawCache.has(filename)) {
+    return;
+  }
+  fetchBody(filename).catch(() => null);
+}
+
+function fetchShared(filename, parse, onError) {
   if (memCache.has(filename)) return Promise.resolve(memCache.get(filename));
   const hit = inflight.get(filename);
   if (hit) return hit;
   const job = (async () => {
     try {
-      const res = await fetch(BUCKET_BASE + filename, { cache: "default" });
-      if (!res.ok) return null;
-      const data = await read(res);
+      const body = await fetchBody(filename);
+      const data = body === null ? null : parse(body);
       memCache.set(filename, data);
       return data;
     } catch (e) {
@@ -59,6 +165,7 @@ function fetchShared(filename, read, onError) {
       return null;
     } finally {
       inflight.delete(filename);
+      rawCache.delete(filename);
     }
   })();
   inflight.set(filename, job);
@@ -68,32 +175,42 @@ function fetchShared(filename, read, onError) {
 function fetchJson(filename) {
   return fetchShared(
     filename,
-    async (res) => stripWebgl(await res.json()),
+    (body) => stripWebgl(JSON.parse(body)),
     (e) => console.warn("fetchJson failed", filename, e)
   );
 }
 
 function fetchText(filename) {
-  return fetchShared(filename, (res) => res.text(), null);
+  return fetchShared(filename, (body) => body, null);
+}
+
+function chartFile(fc, hours, suffix) {
+  const w = resolveChartWindow(hours);
+  return w === null ? null : `${safeFc(fc)}_${w}h_${suffix}.json`;
+}
+
+function textFile(fc, hours, suffix) {
+  const w = resolveChartWindow(hours);
+  return w === null ? null : `${safeFc(fc)}_${w}h_${suffix}.txt`;
 }
 
 function peekCharts(fc, hours, suffix) {
-  const w = resolveChartWindow(hours);
-  if (w === null) return null;
-  const hit = memCache.get(`${safeFc(fc)}_${w}h_${suffix}.json`);
+  const file = chartFile(fc, hours, suffix);
+  if (file === null) return null;
+  const hit = memCache.get(file);
   return hit && typeof hit.then !== "function" ? hit : null;
 }
 
 function loadCharts(fc, hours, suffix) {
-  const w = resolveChartWindow(hours);
-  if (w === null) return Promise.resolve(null);
-  return fetchJson(`${safeFc(fc)}_${w}h_${suffix}.json`);
+  const file = chartFile(fc, hours, suffix);
+  if (file === null) return Promise.resolve(null);
+  return fetchJson(file);
 }
 
 function loadText(fc, hours, suffix) {
-  const w = resolveChartWindow(hours);
-  if (w === null) return Promise.resolve(null);
-  return fetchText(`${safeFc(fc)}_${w}h_${suffix}.txt`);
+  const file = textFile(fc, hours, suffix);
+  if (file === null) return Promise.resolve(null);
+  return fetchText(file);
 }
 
 async function extractDateRange(fc, hours) {
@@ -1392,6 +1509,20 @@ function fitPlot(pd) {
   fitColorbars(pd);
 }
 
+function paneIsActive(node) {
+  const pane = node && node.closest ? node.closest(".tab-pane") : null;
+  return !pane || pane.classList.contains("active");
+}
+
+function settlePlot(pd) {
+  if (!pd || !pd._wxSettlePending) return;
+  pd._wxSettlePending = false;
+  if (!pd.isConnected) return;
+  settleAngledTicks(pd);
+  syncSize(pd);
+  fitPlot(pd);
+}
+
 function needsResize(pd) {
   if (!plotRoomy(pd)) return false;
   const w = pd.clientWidth;
@@ -1412,12 +1543,6 @@ function syncSize(pd) {
   return true;
 }
 
-function afterPaint() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => setTimeout(resolve, 0));
-  });
-}
-
 const MOUNT_BUDGET_MS = 8;
 
 const MOUNT_MARGIN_PX = 700;
@@ -1428,9 +1553,9 @@ const MOUNT_ORPHAN_MS = 20000;
 
 const _mountQueue = [];
 
-let _mountRaf = 0;
+let _mountFront = false;
 
-let _mountIdle = 0;
+let _mountPoll = 0;
 
 let _mountKick = 0;
 
@@ -1447,21 +1572,23 @@ function mountNear(node) {
   return r.bottom > -MOUNT_MARGIN_PX && r.top < h + MOUNT_MARGIN_PX;
 }
 
-function nextMountIndex(held) {
-  let best = -1;
-  let bestRank = 99;
+function nextMountIndex() {
   for (let i = 0; i < _mountQueue.length; i++) {
     const job = _mountQueue[i];
-    if (!job.node.isConnected || !job.node.clientWidth) continue;
-    const rank = mountRank(job);
-    if (rank >= bestRank) continue;
-    if (rank > 0 && held) continue;
+    if (!job.node.isConnected) continue;
+    if (mountRank(job) !== 0) continue;
+    if (!job.node.clientWidth) continue;
     if (!mountNear(job.node)) continue;
-    bestRank = rank;
-    best = i;
-    if (rank === 0) break;
+    return i;
   }
-  return best;
+  return -1;
+}
+
+function activeMountsPending() {
+  for (const job of _mountQueue) {
+    if (job.node.isConnected && mountRank(job) === 0) return true;
+  }
+  return false;
 }
 
 function pruneMounts() {
@@ -1474,40 +1601,53 @@ function pruneMounts() {
   }
 }
 
-function drainMounts() {
-  _mountRaf = 0;
-  const start = performance.now();
-  const held = start < _prebuildHoldUntil;
-  let ran = 0;
-  for (;;) {
-    const idx = nextMountIndex(held);
-    if (idx < 0) break;
-    const job = _mountQueue.splice(idx, 1)[0];
-    try {
-      job.run();
-    } catch (e) {
-      void e;
-    }
-    ran++;
-    if (performance.now() - start >= MOUNT_BUDGET_MS) break;
-  }
-  pruneMounts();
-  if (!_mountQueue.length) return;
-  if (ran) {
-    _mountRaf = requestAnimationFrame(drainMounts);
-    return;
-  }
-  if (!_mountIdle) {
-    _mountIdle = setTimeout(() => {
-      _mountIdle = 0;
-      kickMounts();
-    }, MOUNT_IDLE_MS);
+function runMount(idx) {
+  const job = _mountQueue.splice(idx, 1)[0];
+  try {
+    job.run();
+  } catch (e) {
+    void e;
   }
 }
 
+function drainMounts() {
+  _mountFront = false;
+  const start = performance.now();
+  let yielded = false;
+  for (;;) {
+    if (inputPending()) {
+      yielded = true;
+      break;
+    }
+    const idx = nextMountIndex();
+    if (idx < 0) break;
+    runMount(idx);
+    if (performance.now() - start >= MOUNT_BUDGET_MS) {
+      yielded = true;
+      break;
+    }
+  }
+  pruneMounts();
+  if (!_mountQueue.length) return;
+  if (yielded) {
+    kickMounts();
+    return;
+  }
+  scheduleMountPoll();
+}
+
+function scheduleMountPoll() {
+  if (_mountPoll || !activeMountsPending()) return;
+  _mountPoll = setTimeout(() => {
+    _mountPoll = 0;
+    kickMounts();
+  }, MOUNT_IDLE_MS);
+}
+
 function kickMounts() {
-  if (!_mountQueue.length || _mountRaf) return;
-  _mountRaf = requestAnimationFrame(drainMounts);
+  if (!_mountQueue.length || _mountFront) return;
+  _mountFront = true;
+  afterFrame(drainMounts);
 }
 
 function kickMountsSoon() {
@@ -1550,6 +1690,13 @@ function graph(figDict, opts = {}) {
     if (!plotDiv._wxDrawn || !plotDiv._fullLayout) return;
     if (syncSize(plotDiv)) scheduleFit();
   };
+
+  const drawnHooks = [];
+  wrap._wxOnDrawn = (fn) => {
+    if (plotDiv._wxDrawn) fn();
+    else drawnHooks.push(fn);
+  };
+
   if (!figDict) {
     wrap.appendChild(el("div", "unavailable", "Chart data unavailable."));
     return wrap;
@@ -1633,13 +1780,14 @@ function graph(figDict, opts = {}) {
           mounted = true;
           plotDiv._wxDrawn = true;
           plotDiv._wxWidth = plotDiv.clientWidth;
-          settleAngledTicks(plotDiv);
           if (!listening && typeof plotDiv.on === "function") {
             listening = true;
             plotDiv.on("plotly_restyle", syncScorecards);
           }
-          syncSize(plotDiv);
-          fitPlot(plotDiv);
+          plotDiv._wxSettlePending = true;
+          if (paneIsActive(plotDiv)) settlePlot(plotDiv);
+          else nextTask(() => settlePlot(plotDiv));
+          for (const fn of drawnHooks.splice(0)) fn();
         });
     }
   };
@@ -1768,6 +1916,56 @@ function expandButton(onToggle) {
   return btn;
 }
 
+const SEED_ORPHAN_MS = 20000;
+
+const SEED_RETRY_MS = 120;
+
+const _seedQueue = [];
+
+let _seedRaf = 0;
+
+let _seedTimer = 0;
+
+function queueSeed(job) {
+  job.born = performance.now();
+  _seedQueue.push(job);
+  kickSeeds();
+}
+
+function kickSeeds() {
+  if (_seedRaf || !_seedQueue.length) return;
+  if (_seedTimer) {
+    clearTimeout(_seedTimer);
+    _seedTimer = 0;
+  }
+  _seedRaf = requestAnimationFrame(flushSeeds);
+}
+
+function flushSeeds() {
+  _seedRaf = 0;
+  const now = performance.now();
+  const jobs = _seedQueue.splice(0);
+  const writes = [];
+  for (const job of jobs) {
+    if (job.done && job.done()) continue;
+    if (!job.node.isConnected) {
+      if (now - job.born < SEED_ORPHAN_MS) _seedQueue.push(job);
+      continue;
+    }
+    const w = job.read();
+    if (w) writes.push(w);
+    else _seedQueue.push(job);
+  }
+  for (const w of writes) w.write();
+  for (const w of writes) if (w.after) w.after();
+  if (_seedQueue.length && !_seedTimer) {
+    _seedTimer = setTimeout(() => {
+      _seedTimer = 0;
+      kickSeeds();
+    }, SEED_RETRY_MS);
+  }
+}
+
 function makeCardExpandable(c, child) {
   const graphWrap = findGraphWrap(child);
   if (!graphWrap) return;
@@ -1786,21 +1984,26 @@ function makeCardExpandable(c, child) {
   let quiet = false;
   let plain = false;
 
-  const seedHeight = () => {
-    if (c.style.height) return;
-    const h = Math.round(c.getBoundingClientRect().height);
-    if (!h) {
-      requestAnimationFrame(seedHeight);
-      return;
-    }
-    const want = Math.round(graphWrap._wxBaseHeight || 0);
-    const have = plotDiv ? Math.round(plotDiv.getBoundingClientRect().height) : 0;
-    baseH = want && have < want ? h + (want - have) : h;
-    c.style.height = baseH + "px";
-    c.classList.add("wx-sized");
-    resize();
-  };
-  requestAnimationFrame(seedHeight);
+  queueSeed({
+    node: c,
+    done: () => !!c.style.height,
+    read: () => {
+      const h = Math.round(c.getBoundingClientRect().height);
+      if (!h) return null;
+      const want = Math.round(graphWrap._wxBaseHeight || 0);
+      const have = plotDiv ? Math.round(plotDiv.getBoundingClientRect().height) : 0;
+      const next = want && have < want ? h + (want - have) : h;
+      return {
+        write: () => {
+          if (c.style.height) return;
+          baseH = next;
+          c.style.height = baseH + "px";
+          c.classList.add("wx-sized");
+        },
+        after: () => resize(),
+      };
+    },
+  });
 
   const rowOf = () => {
     const r = c.parentNode;
@@ -2362,15 +2565,18 @@ function makeBoxExpandable(shell, target) {
   });
   shell.appendChild(btn);
 
-  let tries = 0;
-  const checkFit = () => {
-    if (!shell.isConnected) {
-      if (tries++ < 180) requestAnimationFrame(checkFit);
-      return;
-    }
-    btn.style.display = target.scrollHeight > target.clientHeight + 4 ? "" : "none";
-  };
-  requestAnimationFrame(checkFit);
+  queueSeed({
+    node: shell,
+    done: null,
+    read: () => {
+      const over = target.scrollHeight > target.clientHeight + 4;
+      return {
+        write: () => {
+          btn.style.display = over ? "" : "none";
+        },
+      };
+    },
+  });
 }
 
 const GRID_H_SPACING = 0.012;
@@ -3310,7 +3516,7 @@ function stationGrid(c, views) {
   wrap._wxGridPlot = g._wxPlotDiv;
   wrap._wxGraphWrap = g;
   if (!isMobile()) makeCardExpandable(wrap, g);
-  wireGridStationClicks(wrap);
+  wireGridStationClicks(wrap, g);
 
   return wrap;
 }
@@ -4309,13 +4515,15 @@ async function buildOverview(fc, hours) {
   requestAnimationFrame(sizeOverviewShell);
 
   if (!isMobile()) {
-    warmDetail(true);
     const first = findings[0];
-    if (first) {
+    whenFree(() => {
+      if (state.fc !== fc || state.hours !== hours) return;
+      warmDetail(true);
+      if (!first) return;
       detailModule()
         .then((m) => m.prefetch(detailOpts(first.station, first.tab)))
         .catch(() => {});
-    }
+    });
   }
 
   return box;
@@ -4438,12 +4646,7 @@ function warmDetail(engine) {
 function scheduleWarm() {
   if (_warmScheduled) return;
   _warmScheduled = true;
-  const run = () => warmDetail(!isMobile());
-  if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(run, { timeout: 4000 });
-  } else {
-    setTimeout(run, 1500);
-  }
+  whenFree(() => warmDetail(!isMobile()));
 }
 
 const TAB_SUFFIX = {
@@ -4471,18 +4674,25 @@ function detailOpts(station, tabId) {
   };
 }
 
+const PREFETCH_DWELL_MS = 350;
+
 let _prefetchTimer = 0;
 
 function prefetchDetail(station, tabId) {
   if (!station || !state.fc) return;
-  warmDetail(true);
   if (_prefetchTimer) clearTimeout(_prefetchTimer);
+  const fc = state.fc;
+  const hours = state.hours;
   _prefetchTimer = setTimeout(() => {
     _prefetchTimer = 0;
-    detailModule()
-      .then((m) => m.prefetch(detailOpts(station, tabId)))
-      .catch(() => {});
-  }, 120);
+    whenFree(() => {
+      if (state.fc !== fc || state.hours !== hours) return;
+      warmDetail(true);
+      detailModule()
+        .then((m) => m.prefetch(detailOpts(station, tabId)))
+        .catch(() => {});
+    });
+  }, PREFETCH_DWELL_MS);
 }
 
 function cancelPrefetch() {
@@ -4544,9 +4754,11 @@ function wireGridAlertClicks(wrap) {
     const name = stationAt(ev);
     pd.style.cursor = name ? "pointer" : "";
     if (name) prefetchDetail(name, state.activeTab);
+    else cancelPrefetch();
   });
   pd.on("plotly_unhover", () => {
     pd.style.cursor = "";
+    cancelPrefetch();
   });
 }
 
@@ -5149,43 +5361,39 @@ function markStationCursors(pd, known) {
     n.addEventListener("mouseenter", () => {
       prefetchDetail(name, state.activeTab);
     });
+    n.addEventListener("mouseleave", cancelPrefetch);
   }
   return true;
 }
 
-const GRID_WIRE_MAX_TRIES = 900;
-
-function wireGridStationClicks(wrap) {
+function wireGridStationClicks(wrap, g) {
   const known = new Set(wrap._wxStations || []);
-  let tries = 0;
 
-  const poll = () => {
+  const run = () => {
     const pd = wrap._wxGridPlot;
-    if (pd && typeof pd.on === "function") {
-      if (!pd._wxGridWired) {
-        pd._wxGridWired = true;
-        if (known.size) {
-          pd.on("plotly_clickannotation", (ev) => {
-            const name = annotationStation(ev, known);
-            if (name) openStationChart(wrap._wxPanel, name, state.activeTab);
-          });
-          pd.on("plotly_hoverannotation", (ev) => {
-            const name = annotationStation(ev, known);
-            if (name) prefetchDetail(name, state.activeTab);
-          });
-          pd.on("plotly_afterplot", () => markStationCursors(pd, known));
-          markStationCursors(pd, known);
-        }
+    if (!pd || typeof pd.on !== "function") return;
+    if (!pd._wxGridWired) {
+      pd._wxGridWired = true;
+      if (known.size) {
+        pd.on("plotly_clickannotation", (ev) => {
+          const name = annotationStation(ev, known);
+          if (name) openStationChart(wrap._wxPanel, name, state.activeTab);
+        });
+        pd.on("plotly_hoverannotation", (ev) => {
+          const name = annotationStation(ev, known);
+          if (name) prefetchDetail(name, state.activeTab);
+        });
+        pd.on("plotly_afterplot", () => markStationCursors(pd, known));
+        markStationCursors(pd, known);
       }
-      wireGridAlertClicks(wrap);
-      wireGridSpike(wrap);
-      wireGridRangeSync(wrap);
-      wireGridZoom(wrap);
-      return;
     }
-    if (tries++ < GRID_WIRE_MAX_TRIES) requestAnimationFrame(poll);
+    wireGridAlertClicks(wrap);
+    wireGridSpike(wrap);
+    wireGridRangeSync(wrap);
+    wireGridZoom(wrap);
   };
-  requestAnimationFrame(poll);
+
+  if (g && typeof g._wxOnDrawn === "function") g._wxOnDrawn(run);
 }
 
 const TABS = [
@@ -5281,6 +5489,7 @@ function resizePlots(node) {
   if (!node || !node.querySelectorAll) return;
   for (const pd of node.querySelectorAll(".wx-plot")) {
     if (!pd._wxDrawn || !pd._fullLayout) continue;
+    if (pd._wxSettlePending) settlePlot(pd);
     if (!syncSize(pd)) continue;
     pd._wxWidth = pd.clientWidth;
     fitPlot(pd);
@@ -5315,20 +5524,10 @@ function restoreOpenDetail(saved) {
 }
 
 const TAB_PREFETCH_DELAY_MS = 150;
-const TAB_PREBUILD_DELAY_MS = 300;
-const TAB_PREBUILD_GAP_MS = 60;
-const TAB_PREBUILD_IDLE_MS = 1200;
-const PREBUILD_HOLD_MS = 1400;
-const PREBUILD_RECHECK_MS = 200;
-
-let _prebuildHoldUntil = 0;
-
-function holdPrebuild(msAhead) {
-  const until = performance.now() + (msAhead || PREBUILD_HOLD_MS);
-  if (until > _prebuildHoldUntil) _prebuildHoldUntil = until;
-}
 
 let _tabWarmToken = 0;
+
+let _revealToken = 0;
 
 let $panes = null;
 
@@ -5338,46 +5537,38 @@ function activePane() {
   return $panes ? $panes.querySelector(".tab-pane.active") : null;
 }
 
-const HOVER_PREBUILD_MS = 45;
-
-let _hoverTimer = 0;
-
-function cancelHoverPrebuild() {
-  if (!_hoverTimer) return;
-  clearTimeout(_hoverTimer);
-  _hoverTimer = 0;
-}
-
-function hoverPrebuild(tab) {
-  cancelHoverPrebuild();
-  if (!state.fc) return;
-  const entry = tabPanes.get(tab.id);
-  if (entry && (entry.ready || entry.job)) return;
-  _hoverTimer = setTimeout(() => {
-    _hoverTimer = 0;
-    if (!state.fc) return;
-    fillPane(tab);
-  }, HOVER_PREBUILD_MS);
-}
-
 function tabShell() {
   if ($panes && $panes.isConnected) return $panes;
   $main.innerHTML = "";
   tabPanes.clear();
 
   const bar = el("div", "al-tabs");
+  bar.addEventListener(
+    "pointermove",
+    (ev) => {
+      if (ev.pointerType && ev.pointerType !== "mouse") return;
+      holdPrebuild(TAB_INTENT_HOLD_MS);
+    },
+    { passive: true }
+  );
   for (const t of TABS) {
     const btn = el("div", "al-tab", t.label);
     btn.dataset.tab = t.id;
-    btn.addEventListener("click", () => {
-      cancelHoverPrebuild();
+    let pressed = false;
+    btn.addEventListener("pointerdown", (ev) => {
+      pressed = ev.pointerType === "mouse" && ev.button === 0;
+      if (!pressed) return;
+      cancelPrefetch();
       renderTab(t.id);
     });
-    btn.addEventListener("pointerenter", (ev) => {
-      if (ev.pointerType && ev.pointerType !== "mouse") return;
-      hoverPrebuild(t);
+    btn.addEventListener("click", () => {
+      if (pressed) {
+        pressed = false;
+        return;
+      }
+      cancelPrefetch();
+      renderTab(t.id);
     });
-    btn.addEventListener("pointerleave", cancelHoverPrebuild);
     bar.appendChild(btn);
   }
   $main.appendChild(bar);
@@ -5390,6 +5581,9 @@ function tabShell() {
 function resetTabs() {
   tabPanes.clear();
   if ($panes) $panes.innerHTML = "";
+  for (let i = _mountQueue.length - 1; i >= 0; i--) {
+    if (!_mountQueue[i].node.isConnected) _mountQueue.splice(i, 1);
+  }
 }
 
 function paneFor(tab) {
@@ -5428,7 +5622,9 @@ function fillPane(tab) {
       entry.pane.innerHTML = "";
       entry.pane.appendChild(content);
       entry.ready = true;
-      if (entry.pane.classList.contains("active")) sizeOverviewShell();
+      if (entry.pane.classList.contains("active")) {
+        requestAnimationFrame(sizeOverviewShell);
+      }
       return entry;
     })
     .catch((e) => {
@@ -5442,31 +5638,20 @@ function fillPane(tab) {
   return entry.job;
 }
 
-function prebuildTab(tab, token, stale) {
-  if (stale(token)) return Promise.resolve();
-  const entry = tabPanes.get(tab.id);
-  if (entry && (entry.ready || entry.job)) return Promise.resolve();
-  return fillPane(tab);
-}
-
-function tabPayloadJobs(fc, hours, tab) {
+function tabPayloadFiles(fc, hours, tab) {
   const suffix = TAB_SUFFIX[tab.id];
-  if (!suffix) return [];
+  if (!suffix || tab.id === OVERVIEW_TAB) return [];
   return [
-    loadCharts(fc, hours, suffix),
-    loadText(fc, hours, `insights_${suffix}`),
-    loadCharts(fc, hours, `insights_${suffix}`),
+    chartFile(fc, hours, suffix),
+    textFile(fc, hours, `insights_${suffix}`),
+    chartFile(fc, hours, `insights_${suffix}`),
   ];
 }
 
 function prefetchTabPayloads(fc, hours, tabs) {
-  const jobs = [];
   for (const tab of tabs) {
-    for (const job of tabPayloadJobs(fc, hours, tab)) {
-      jobs.push(Promise.resolve(job).catch(() => null));
-    }
+    for (const file of tabPayloadFiles(fc, hours, tab)) warmFile(file);
   }
-  return Promise.all(jobs);
 }
 
 function warmTabPayloads() {
@@ -5474,73 +5659,89 @@ function warmTabPayloads() {
   const hours = state.hours;
   if (!fc) return;
   const token = ++_tabWarmToken;
-  const queue = [];
-  for (const t of TABS) {
-    if (t.id === OVERVIEW_TAB || t.id === state.activeTab) continue;
-    queue.push(t);
-  }
+  const queue = TABS.filter(
+    (t) => t.id !== OVERVIEW_TAB && t.id !== state.activeTab
+  );
   if (!queue.length) return;
+  setTimeout(() => {
+    if (token !== _tabWarmToken || state.fc !== fc || state.hours !== hours) return;
+    prefetchTabPayloads(fc, hours, queue);
+  }, TAB_PREFETCH_DELAY_MS);
+}
 
-  const stale = (tk) =>
-    tk !== _tabWarmToken || state.fc !== fc || state.hours !== hours;
+function markTabButtons(tabId) {
+  for (const btn of $main.querySelectorAll(".al-tab")) {
+    btn.classList.toggle("active", btn.dataset.tab === tabId);
+  }
+}
 
-  const idle = (fn) => {
-    if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(fn, { timeout: TAB_PREBUILD_IDLE_MS });
-    } else {
-      setTimeout(fn, TAB_PREBUILD_GAP_MS);
-    }
-  };
+function showPane(host, entry) {
+  for (const pane of host.children) {
+    if (!pane.classList.contains("tab-pane")) continue;
+    pane.classList.toggle("active", pane === entry.pane);
+  }
+}
 
-  const build = () => {
-    if (stale(token)) return;
-    const wait = _prebuildHoldUntil - performance.now();
-    if (wait > 0) {
-      setTimeout(build, Math.min(wait + 20, PREBUILD_RECHECK_MS));
+function revealPane(host, entry, frames) {
+  const token = ++_revealToken;
+  return new Promise((resolve) => {
+    const apply = () => {
+      if (token !== _revealToken) {
+        resolve(false);
+        return;
+      }
+      showPane(host, entry);
+      resolve(true);
+    };
+    if (frames <= 0) {
+      apply();
       return;
     }
-    const tab = queue.shift();
-    if (!tab) return;
-    prebuildTab(tab, token, stale)
-      .catch(() => null)
-      .then(() => {
-        if (!stale(token)) idle(build);
+    const step = (left) => {
+      requestAnimationFrame(() => {
+        if (token !== _revealToken) {
+          resolve(false);
+          return;
+        }
+        if (left > 1) step(left - 1);
+        else apply();
       });
-  };
-
-  const warmList = queue.slice();
-  setTimeout(() => {
-    if (stale(token)) return;
-    prefetchTabPayloads(fc, hours, warmList);
-  }, TAB_PREFETCH_DELAY_MS);
-
-  if (!isMobile()) setTimeout(build, TAB_PREBUILD_DELAY_MS);
+    };
+    step(frames);
+  });
 }
 
 function renderTab(tabId) {
-  const tab = TABS.find(t => t.id === tabId) || TABS[0];
-  state.activeTab = tab.id;
-  holdPrebuild(PREBUILD_HOLD_MS);
-
+  const tab = TABS.find((t) => t.id === tabId) || TABS[0];
   const host = tabShell();
   const entry = paneFor(tab);
+  const current = host.querySelector(".tab-pane.active");
 
-  for (const btn of $main.querySelectorAll(".al-tab")) {
-    btn.classList.toggle("active", btn.dataset.tab === tab.id);
-  }
-  for (const pane of host.querySelectorAll(".tab-pane")) {
-    pane.classList.toggle("active", pane === entry.pane);
+  if (state.activeTab === tab.id && current === entry.pane && entry.ready) {
+    return Promise.resolve();
   }
 
+  state.activeTab = tab.id;
+  holdPrebuild(PREBUILD_HOLD_MS);
+  markTabButtons(tab.id);
+
+  const frames = !current || current === entry.pane ? 0 : entry.ready ? 2 : 1;
+  const reveal = revealPane(host, entry, frames);
   const job = entry.ready ? Promise.resolve(entry) : fillPane(tab);
 
-  sizeOverviewShell();
-  kickMountsSoon();
-  scheduleWarm();
-  warmTabPayloads();
+  reveal.then((ok) => {
+    if (!ok) return;
+    afterFrame(() => {
+      if (state.activeTab !== tab.id) return;
+      kickMounts();
+      kickSeeds();
+      scheduleWarm();
+      warmTabPayloads();
+    });
+  });
 
-  return job.then(() => {
-    if (state.activeTab !== tab.id) return;
+  return Promise.all([job, reveal]).then((res) => {
+    if (!res[1] || state.activeTab !== tab.id) return;
     return afterPaint().then(() => {
       if (state.activeTab !== tab.id) return;
       resizePlots(entry.pane);
@@ -5572,6 +5773,7 @@ async function runAnalysis() {
   if (changed) {
     memCache.clear();
     inflight.clear();
+    rawCache.clear();
     resetTabs();
     cancelPrefetch();
   }
