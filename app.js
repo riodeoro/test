@@ -1551,18 +1551,44 @@ const MOUNT_IDLE_MS = 250;
 
 const MOUNT_ORPHAN_MS = 20000;
 
+const TIER_VISIBLE = 0;
+
+const TIER_NEAR = 1;
+
+const TIER_FAR = 2;
+
+const TIER_BLOCKED = 9;
+
 const _mountQueue = [];
 
 let _mountFront = false;
+
+let _mountFar = false;
 
 let _mountPoll = 0;
 
 let _mountKick = 0;
 
-function mountRank(job) {
-  const pane = job.node.closest ? job.node.closest(".tab-pane") : null;
-  if (!pane) return 0;
-  return pane.classList.contains("active") ? 0 : 1;
+const _batchPlots = new Set();
+
+const _revealPlots = new Set();
+
+let _batchWaiting = 0;
+
+let _revealRaf = 0;
+
+function mountTier(job) {
+  const node = job.node;
+  if (!node.isConnected) return TIER_BLOCKED;
+  const pane = node.closest ? node.closest(".tab-pane") : null;
+  if (pane && !pane.classList.contains("active")) return TIER_BLOCKED;
+  if (!node.clientWidth) return TIER_BLOCKED;
+  const r = node.getBoundingClientRect();
+  if (!r.height && !r.width) return TIER_BLOCKED;
+  const h = window.innerHeight || 0;
+  if (r.bottom > 0 && r.top < h) return TIER_VISIBLE;
+  if (r.bottom > -MOUNT_MARGIN_PX && r.top < h + MOUNT_MARGIN_PX) return TIER_NEAR;
+  return TIER_FAR;
 }
 
 function mountNear(node) {
@@ -1572,21 +1598,31 @@ function mountNear(node) {
   return r.bottom > -MOUNT_MARGIN_PX && r.top < h + MOUNT_MARGIN_PX;
 }
 
-function nextMountIndex() {
+function nextMount(maxTier) {
+  let best = null;
   for (let i = 0; i < _mountQueue.length; i++) {
-    const job = _mountQueue[i];
-    if (!job.node.isConnected) continue;
-    if (mountRank(job) !== 0) continue;
-    if (!job.node.clientWidth) continue;
-    if (!mountNear(job.node)) continue;
-    return i;
+    const tier = mountTier(_mountQueue[i]);
+    if (tier > maxTier) continue;
+    if (!best || tier < best.tier) {
+      best = { index: i, tier: tier };
+      if (tier === TIER_VISIBLE) break;
+    }
   }
-  return -1;
+  return best;
+}
+
+function hasMountTier(tier) {
+  for (const job of _mountQueue) {
+    if (mountTier(job) === tier) return true;
+  }
+  return false;
 }
 
 function activeMountsPending() {
   for (const job of _mountQueue) {
-    if (job.node.isConnected && mountRank(job) === 0) return true;
+    if (!job.node.isConnected) continue;
+    const pane = job.node.closest ? job.node.closest(".tab-pane") : null;
+    if (!pane || pane.classList.contains("active")) return true;
   }
   return false;
 }
@@ -1601,39 +1637,113 @@ function pruneMounts() {
   }
 }
 
-function runMount(idx) {
-  const job = _mountQueue.splice(idx, 1)[0];
-  try {
-    job.run();
-  } catch (e) {
-    void e;
+function revealPlot(pd) {
+  if (!pd) return;
+  pd.classList.remove("wx-pending");
+  const wait = pd._wxWait;
+  pd._wxWait = null;
+  if (wait && wait.parentNode) wait.parentNode.removeChild(wait);
+}
+
+function flushReveals() {
+  _revealRaf = 0;
+  for (const pd of _revealPlots) revealPlot(pd);
+  _revealPlots.clear();
+}
+
+function queueReveal(pd) {
+  _revealPlots.add(pd);
+  if (!_revealRaf) _revealRaf = requestAnimationFrame(flushReveals);
+}
+
+function settleBatch() {
+  if (!_batchPlots.size || _batchWaiting > 0) return;
+  if (hasMountTier(TIER_VISIBLE)) return;
+  for (const pd of _batchPlots) queueReveal(pd);
+  _batchPlots.clear();
+}
+
+function runMount(pick) {
+  const job = _mountQueue.splice(pick.index, 1)[0];
+  const pd = job.node;
+  const batched = pick.tier === TIER_VISIBLE;
+  if (batched) {
+    _batchPlots.add(pd);
+    _batchWaiting++;
   }
+  let result = null;
+  try {
+    result = job.run();
+  } catch (e) {
+    result = null;
+  }
+  Promise.resolve(result)
+    .catch(() => null)
+    .then(() => {
+      if (batched) {
+        _batchWaiting--;
+        settleBatch();
+      } else {
+        queueReveal(pd);
+      }
+    });
 }
 
 function drainMounts() {
   _mountFront = false;
   const start = performance.now();
-  let yielded = false;
   for (;;) {
     if (inputPending()) {
-      yielded = true;
-      break;
+      kickMounts();
+      return;
     }
-    const idx = nextMountIndex();
-    if (idx < 0) break;
-    runMount(idx);
+    const pick = nextMount(TIER_NEAR);
+    if (!pick) break;
+    runMount(pick);
+    if (pick.tier === TIER_VISIBLE && !hasMountTier(TIER_VISIBLE)) {
+      pruneMounts();
+      if (nextMount(TIER_NEAR)) {
+        kickMounts();
+      } else {
+        scheduleFarMounts();
+        scheduleMountPoll();
+      }
+      return;
+    }
     if (performance.now() - start >= MOUNT_BUDGET_MS) {
-      yielded = true;
-      break;
+      continueMounts();
+      return;
     }
   }
   pruneMounts();
-  if (!_mountQueue.length) return;
-  if (yielded) {
+  settleBatch();
+  scheduleFarMounts();
+  scheduleMountPoll();
+}
+
+function continueMounts() {
+  if (_mountFront) return;
+  _mountFront = true;
+  nextTask(drainMounts);
+}
+
+function scheduleFarMounts() {
+  if (_mountFar || !hasMountTier(TIER_FAR)) return;
+  _mountFar = true;
+  whenFree(drainFarMounts);
+}
+
+function drainFarMounts() {
+  _mountFar = false;
+  if (nextMount(TIER_NEAR)) {
     kickMounts();
     return;
   }
-  scheduleMountPoll();
+  const pick = nextMount(TIER_FAR);
+  if (!pick) return;
+  runMount(pick);
+  pruneMounts();
+  scheduleFarMounts();
 }
 
 function scheduleMountPoll() {
@@ -1662,6 +1772,14 @@ function kickMountsSoon() {
 function queueMount(node, run) {
   _mountQueue.push({ node: node, run: run, born: performance.now() });
   kickMounts();
+}
+
+function resetMounts() {
+  for (let i = _mountQueue.length - 1; i >= 0; i--) {
+    if (!_mountQueue[i].node.isConnected) _mountQueue.splice(i, 1);
+  }
+  _batchPlots.clear();
+  _batchWaiting = 0;
 }
 
 document.addEventListener("scroll", kickMountsSoon, true);
@@ -1707,8 +1825,13 @@ function graph(figDict, opts = {}) {
   wait.setAttribute("aria-label", "Loading chart");
   wait.appendChild(el("div", "wx-plot-spin"));
   plotDiv.appendChild(wait);
-  const clearWait = () => {
-    if (wait.parentNode) wait.parentNode.removeChild(wait);
+  plotDiv.classList.add("wx-pending");
+  plotDiv._wxWait = wait;
+
+  const failDraw = () => {
+    revealPlot(plotDiv);
+    if (plotDiv.querySelector(".wx-plot-fail")) return;
+    plotDiv.appendChild(el("div", "unavailable wx-plot-fail", "Chart failed to render."));
   };
 
   let fig = figDict;
@@ -1783,23 +1906,23 @@ function graph(figDict, opts = {}) {
           syncSize(plotDiv);
           fitPlot(plotDiv);
         });
-    } else {
-      clearWait();
-      Plotly.newPlot(plotDiv, prepared.data, prepared.layout, config)
-        .then(() => {
-          mounted = true;
-          plotDiv._wxDrawn = true;
-          plotDiv._wxWidth = plotDiv.clientWidth;
-          if (!listening && typeof plotDiv.on === "function") {
-            listening = true;
-            plotDiv.on("plotly_restyle", syncScorecards);
-          }
-          plotDiv._wxSettlePending = true;
-          if (paneIsActive(plotDiv)) settlePlot(plotDiv);
-          else nextTask(() => settlePlot(plotDiv));
-          for (const fn of drawnHooks.splice(0)) fn();
-        });
+      return null;
     }
+    const drawn = Plotly.newPlot(plotDiv, prepared.data, prepared.layout, config);
+    drawn.then(() => {
+      mounted = true;
+      plotDiv._wxDrawn = true;
+      plotDiv._wxWidth = plotDiv.clientWidth;
+      if (!listening && typeof plotDiv.on === "function") {
+        listening = true;
+        plotDiv.on("plotly_restyle", syncScorecards);
+      }
+      plotDiv._wxSettlePending = true;
+      if (paneIsActive(plotDiv)) settlePlot(plotDiv);
+      else nextTask(() => settlePlot(plotDiv));
+      for (const fn of drawnHooks.splice(0)) fn();
+    }, failDraw);
+    return drawn;
   };
 
   if (opts.stationFilter) {
@@ -1825,10 +1948,10 @@ function graph(figDict, opts = {}) {
 
   queueMount(plotDiv, () => {
     try {
-      draw();
+      return draw();
     } catch (e) {
-      clearWait();
-      plotDiv.appendChild(el("div", "unavailable", "Chart failed to render."));
+      failDraw();
+      return null;
     }
   });
 
@@ -5592,9 +5715,7 @@ function tabShell() {
 function resetTabs() {
   tabPanes.clear();
   if ($panes) $panes.innerHTML = "";
-  for (let i = _mountQueue.length - 1; i >= 0; i--) {
-    if (!_mountQueue[i].node.isConnected) _mountQueue.splice(i, 1);
-  }
+  resetMounts();
 }
 
 function paneFor(tab) {
