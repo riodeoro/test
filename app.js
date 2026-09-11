@@ -1702,6 +1702,15 @@ function graph(figDict, opts = {}) {
     return wrap;
   }
 
+  const wait = el("div", "wx-plot-wait");
+  wait.setAttribute("role", "status");
+  wait.setAttribute("aria-label", "Loading chart");
+  wait.appendChild(el("div", "wx-plot-spin"));
+  plotDiv.appendChild(wait);
+  const clearWait = () => {
+    if (wait.parentNode) wait.parentNode.removeChild(wait);
+  };
+
   let fig = figDict;
   let layout;
 
@@ -1775,6 +1784,7 @@ function graph(figDict, opts = {}) {
           fitPlot(plotDiv);
         });
     } else {
+      clearWait();
       Plotly.newPlot(plotDiv, prepared.data, prepared.layout, config)
         .then(() => {
           mounted = true;
@@ -1817,6 +1827,7 @@ function graph(figDict, opts = {}) {
     try {
       draw();
     } catch (e) {
+      clearWait();
       plotDiv.appendChild(el("div", "unavailable", "Chart failed to render."));
     }
   });
