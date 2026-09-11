@@ -410,11 +410,28 @@ function load(opts) {
   return p;
 }
 
+function chartReady(opts, suffix) {
+  if (!suffix) return false;
+  if (typeof opts.peekChart !== "function") return true;
+  return !!opts.peekChart(suffix);
+}
+
+function boundsReady(opts) {
+  if (Array.isArray(opts.range) && opts.range.length === 2) {
+    const lo = parseStamp(opts.range[0]);
+    const hi = parseStamp(opts.range[1]);
+    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) return true;
+  }
+  return chartReady(opts, opts.tabSuffix);
+}
+
 export function prefetch(opts) {
   if (!opts || !opts.station) return;
   warmEngine();
-  primeAlerts(opts);
-  load(opts).catch(() => {});
+  for (const c of PLOT_PREF[opts.tab] || []) {
+    if (chartReady(opts, ATTR_TAB[c])) alertsFor(opts, c);
+  }
+  if (boundsReady(opts)) load(opts).catch(() => {});
 }
 
 function wantsDir(opts, cols) {
