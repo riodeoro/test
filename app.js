@@ -5693,7 +5693,7 @@ function showPane(host, entry) {
   }
 }
 
-function revealPane(host, entry, frames) {
+function revealPane(host, entry, frames, built) {
   const token = ++_revealToken;
   return new Promise((resolve) => {
     const apply = () => {
@@ -5704,6 +5704,18 @@ function revealPane(host, entry, frames) {
       showPane(host, entry);
       resolve(true);
     };
+    if (built) {
+      let shown = false;
+      const once = () => {
+        if (shown) return;
+        shown = true;
+        apply();
+        if (token === _revealToken) sizeOverviewShell();
+      };
+      built.then(once, once);
+      afterPaint().then(() => nextTask(once));
+      return;
+    }
     if (frames <= 0) {
       apply();
       return;
@@ -5737,8 +5749,9 @@ function renderTab(tabId) {
   markTabButtons(tab.id);
 
   const frames = !current || current === entry.pane ? 0 : entry.ready ? 2 : 1;
-  const reveal = revealPane(host, entry, frames);
+  const cold = !!current && current !== entry.pane && !entry.ready;
   const job = entry.ready ? Promise.resolve(entry) : fillPane(tab);
+  const reveal = revealPane(host, entry, frames, cold ? job : null);
 
   reveal.then((ok) => {
     if (!ok) return;
