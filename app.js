@@ -29,6 +29,25 @@ function nextTask(fn) {
   _taskChannel.port2.postMessage(0);
 }
 
+const _scheduler =
+  typeof scheduler !== "undefined" &&
+  scheduler &&
+  typeof scheduler.postTask === "function"
+    ? scheduler
+    : null;
+
+function backgroundTask(fn) {
+  if (!_scheduler) {
+    nextTask(fn);
+    return;
+  }
+  _scheduler.postTask(fn, { priority: "background" });
+}
+
+function afterFrameBackground(fn) {
+  requestAnimationFrame(() => backgroundTask(fn));
+}
+
 function afterFrame(fn) {
   requestAnimationFrame(() => nextTask(fn));
 }
@@ -72,68 +91,6 @@ function holdPrebuild(msAhead) {
 
 function held() {
   return performance.now() < _prebuildHoldUntil;
-}
-
-const SELECT_HOLD_MS = 1500;
-
-let _selectHoldUntil = 0;
-
-let _selectTimer = 0;
-
-const _selectWaiters = new Set();
-
-function selectHeld() {
-  return performance.now() < _selectHoldUntil;
-}
-
-function flushSelectWaiters() {
-  _selectTimer = 0;
-  const wait = _selectHoldUntil - performance.now();
-  if (wait > 0) {
-    _selectTimer = setTimeout(flushSelectWaiters, wait + 20);
-    return;
-  }
-  const fns = Array.from(_selectWaiters);
-  _selectWaiters.clear();
-  for (const fn of fns) {
-    try {
-      fn();
-    } catch (e) {
-      void e;
-    }
-  }
-}
-
-function waitSelect(fn) {
-  if (!selectHeld()) return false;
-  _selectWaiters.add(fn);
-  if (!_selectTimer) {
-    _selectTimer = setTimeout(
-      flushSelectWaiters,
-      _selectHoldUntil - performance.now() + 20
-    );
-  }
-  return true;
-}
-
-function selectFree() {
-  return new Promise((resolve) => {
-    if (!waitSelect(resolve)) resolve();
-  });
-}
-
-function holdForSelect() {
-  _selectHoldUntil = performance.now() + SELECT_HOLD_MS;
-  holdPrebuild(SELECT_HOLD_MS);
-}
-
-function releaseSelect() {
-  _selectHoldUntil = 0;
-  if (_selectTimer) {
-    clearTimeout(_selectTimer);
-    _selectTimer = 0;
-  }
-  if (_selectWaiters.size) flushSelectWaiters();
 }
 
 function whenFree(fn) {
@@ -1674,11 +1631,10 @@ function runMount(idx) {
 
 function drainMounts() {
   _mountFront = false;
-  if (waitSelect(kickMounts)) return;
   const start = performance.now();
   let yielded = false;
   for (;;) {
-    if (inputPending() || selectHeld()) {
+    if (inputPending()) {
       yielded = true;
       break;
     }
@@ -1693,7 +1649,7 @@ function drainMounts() {
   pruneMounts();
   if (!_mountQueue.length) return;
   if (yielded) {
-    if (!waitSelect(kickMounts)) kickMounts();
+    kickMounts();
     return;
   }
   scheduleMountPoll();
@@ -1710,7 +1666,7 @@ function scheduleMountPoll() {
 function kickMounts() {
   if (!_mountQueue.length || _mountFront) return;
   _mountFront = true;
-  afterFrame(drainMounts);
+  afterFrameBackground(drainMounts);
 }
 
 function kickMountsSoon() {
@@ -2017,7 +1973,6 @@ function kickSeeds() {
 
 function flushSeeds() {
   _seedRaf = 0;
-  if (waitSelect(kickSeeds)) return;
   const now = performance.now();
   const jobs = _seedQueue.splice(0);
   const writes = [];
@@ -5685,7 +5640,6 @@ function fillPane(tab) {
   const fc = state.fc;
   const hours = state.hours;
   entry.job = afterPaint()
-    .then(selectFree)
     .then(() => {
       if (state.fc !== fc || state.hours !== hours) return null;
       return tab.build(fc, hours);
@@ -5787,7 +5741,6 @@ function unparkPlots(pane, plots) {
       for (const pd of queue || plots) pd.style.contentVisibility = "";
       return;
     }
-    if (waitSelect(() => requestAnimationFrame(step))) return;
     if (!queue) {
       queue = plots
         .map((pd, i) => ({ pd: pd, i: i, gap: viewportGap(pd) }))
@@ -5796,9 +5749,9 @@ function unparkPlots(pane, plots) {
     }
     const pd = queue.shift();
     if (pd) pd.style.contentVisibility = "";
-    if (queue.length) requestAnimationFrame(step);
+    if (queue.length) afterFrameBackground(step);
   };
-  requestAnimationFrame(step);
+  afterFrameBackground(step);
 }
 
 function revealPane(host, entry, frames, built, staged) {
@@ -5883,7 +5836,7 @@ function renderTab(tabId) {
 
   return Promise.all([job, reveal]).then((res) => {
     if (!res[1] || state.activeTab !== tab.id) return;
-    return afterPaint().then(selectFree).then(() => {
+    return afterPaint().then(() => {
       if (state.activeTab !== tab.id) return;
       resizePlots(entry.pane);
       catchUpResize();
@@ -5983,23 +5936,6 @@ if ($brand) {
     }
   });
 }
-
-for (const sel of [$fcSelect, $rangeSelect]) {
-  sel.addEventListener("pointerdown", holdForSelect);
-  sel.addEventListener("keydown", holdForSelect);
-  sel.addEventListener("change", releaseSelect);
-  sel.addEventListener("blur", releaseSelect);
-}
-
-document.addEventListener(
-  "pointerdown",
-  (ev) => {
-    const t = ev.target;
-    if ($fcSelect.contains(t) || $rangeSelect.contains(t)) return;
-    releaseSelect();
-  },
-  true
-);
 
 $fcSelect.addEventListener("change", runAnalysis);
 $rangeSelect.addEventListener("change", runAnalysis);
