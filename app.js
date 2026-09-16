@@ -3594,7 +3594,7 @@ async function insightBanner(fc, hours, tab, panel, onPick) {
 
   const parsed = source ? parseFindings(text || "", source) : [];
   const findings = tab === DATA_SUFFIX
-    ? parsed.filter((f) => DATA_SECTIONS.has(f.section))
+    ? parsed.filter((f) => isDataSection(f.section))
     : parsed;
   if (!findings.length) {
     return el("div", "insight-empty", "No alerts");
@@ -3633,12 +3633,26 @@ const INSIGHT_SOURCES = [
   ["power", "tab-power", "Power"],
 ];
 
-const DATA_SECTIONS = new Set([
-  "MISSING STATION DATA",
-  "MISSING SENSOR DATA",
-]);
+const STATION_DATA_SECTION = "MISSING STATION DATA";
+
+const SENSOR_DATA_GROUP = "MISSING SENSOR DATA";
+
+const SENSOR_DATA_SECTION_RE = /^MISSING (?!STATION ).+ DATA$/;
 
 const OVERVIEW_DATA_LIMIT = 5;
+
+function isSensorDataSection(section) {
+  return SENSOR_DATA_SECTION_RE.test(String(section || ""));
+}
+
+function isDataSection(section) {
+  return section === STATION_DATA_SECTION || isSensorDataSection(section);
+}
+
+function missingHours(f) {
+  const m = /^(\d+)\s*h\b/i.exec(String(f.detail || ""));
+  return m ? Number(m[1]) : 0;
+}
 
 const MONTH_INDEX = {
   Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -3753,21 +3767,30 @@ async function collectFindings(fc, hours) {
     ),
   ]);
   const out = [];
-  const dataCounts = new Map();
+  const sensorRows = [];
+  let stationRows = 0;
   texts.forEach((text, i) => {
     if (!text) return;
     const palette = colorMap(palettes[i]);
     for (const f of parseFindings(text, INSIGHT_SOURCES[i])) {
-      if (f.area === DATA_AREA) {
-        if (!DATA_SECTIONS.has(f.section)) continue;
-        const seen = dataCounts.get(f.section) || 0;
-        if (seen >= OVERVIEW_DATA_LIMIT) continue;
-        dataCounts.set(f.section, seen + 1);
-      }
       f.color = palette.get(colorKey(f.section, f.station)) || null;
+      if (f.area === DATA_AREA) {
+        if (isSensorDataSection(f.section)) {
+          sensorRows.push(f);
+          continue;
+        }
+        if (f.section !== STATION_DATA_SECTION) continue;
+        if (stationRows >= OVERVIEW_DATA_LIMIT) continue;
+        stationRows++;
+      }
       out.push(f);
     }
   });
+  sensorRows
+    .map((f, i) => ({ f: f, i: i }))
+    .sort((a, b) => missingHours(b.f) - missingHours(a.f) || a.i - b.i)
+    .slice(0, OVERVIEW_DATA_LIMIT)
+    .forEach((e) => out.push(e.f));
   return applySeverity(out);
 }
 
@@ -3913,7 +3936,9 @@ const SEVERITY_CATEGORIES = [
 ];
 
 function severityKey(area, section) {
-  return String(area || "") + "\u0000" + String(section || "");
+  const group =
+    area === DATA_AREA && isSensorDataSection(section) ? SENSOR_DATA_GROUP : section;
+  return String(area || "") + "\u0000" + String(group || "");
 }
 
 const SEVERITY_RANKS = new Map();
@@ -6206,7 +6231,7 @@ async function runAnalysis() {
   state.range = dmin && dmax ? [dmin, dmax] : null;
 
   $footer.textContent = (dmin && dmax)
-    ? `Data range:  ${dmin}  →  ${dmax}`
+    ? `Data range:  ${dmin}  –  ${dmax}`
     : `FC: ${fc}  |  Window: ${hours}h`;
 }
 
