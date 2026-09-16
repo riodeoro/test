@@ -3585,14 +3585,17 @@ function stationGrid(c, views) {
   return wrap;
 }
 
-async function insightBanner(fc, hours, tab, panel) {
+async function insightBanner(fc, hours, tab, panel, onPick) {
   const source = INSIGHT_SOURCES.find((s) => s[0] === tab);
   const [text, palette] = await Promise.all([
     loadText(fc, hours, `insights_${tab}`),
     loadCharts(fc, hours, `insights_${tab}`),
   ]);
 
-  const findings = source ? parseFindings(text || "", source) : [];
+  const parsed = source ? parseFindings(text || "", source) : [];
+  const findings = tab === DATA_SUFFIX
+    ? parsed.filter((f) => DATA_SECTIONS.has(f.section))
+    : parsed;
   if (!findings.length) {
     return el("div", "insight-empty", "No alerts");
   }
@@ -3607,7 +3610,7 @@ async function insightBanner(fc, hours, tab, panel) {
   ensureInsightStyles();
 
   const shell = el("div", "wx-insight-shell");
-  const wrap = overviewTable(findings, panel, TAB_COLUMNS);
+  const wrap = overviewTable(findings, panel, TAB_COLUMNS, onPick);
   shell.appendChild(wrap);
   makeBoxExpandable(shell, wrap);
   return shell;
@@ -3619,18 +3622,23 @@ const DATA_TAB = "tab-data";
 
 const DATA_SUFFIX = "data";
 
+const DATA_AREA = "Data";
+
 const INSIGHT_SOURCES = [
+  [DATA_SUFFIX, DATA_TAB, DATA_AREA],
   ["rh", "tab-rh", "RH"],
   ["wind", "tab-wind", "Wind"],
   ["temp", "tab-temp", "Temp"],
   ["rn1", "tab-rn1", "Precip"],
   ["power", "tab-power", "Power"],
-  [DATA_SUFFIX, DATA_TAB, "Data"],
 ];
 
-const OVERVIEW_EXCLUDED = new Set([
-  severityKey("Data", "UNCONFIGURED SENSORS"),
+const DATA_SECTIONS = new Set([
+  "MISSING STATION DATA",
+  "MISSING SENSOR DATA",
 ]);
+
+const OVERVIEW_DATA_LIMIT = 5;
 
 const MONTH_INDEX = {
   Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -3745,11 +3753,17 @@ async function collectFindings(fc, hours) {
     ),
   ]);
   const out = [];
+  const dataCounts = new Map();
   texts.forEach((text, i) => {
     if (!text) return;
     const palette = colorMap(palettes[i]);
     for (const f of parseFindings(text, INSIGHT_SOURCES[i])) {
-      if (OVERVIEW_EXCLUDED.has(severityKey(f.area, f.section))) continue;
+      if (f.area === DATA_AREA) {
+        if (!DATA_SECTIONS.has(f.section)) continue;
+        const seen = dataCounts.get(f.section) || 0;
+        if (seen >= OVERVIEW_DATA_LIMIT) continue;
+        dataCounts.set(f.section, seen + 1);
+      }
       f.color = palette.get(colorKey(f.section, f.station)) || null;
       out.push(f);
     }
@@ -3799,6 +3813,7 @@ const SEV_RE = {
   peakKmh: /peak\s+(-?\d+(?:\.\d+)?)\s*km\/h/i,
   leadKmh: /^(-?\d+(?:\.\d+)?)\s*km\/h/i,
   leadPct: /^(-?\d+(?:\.\d+)?)\s*%/i,
+  leadHours: /^(\d+)\s*h\b/i,
   leadMmh: /^(-?\d+(?:\.\d+)?)\s*mm\/h/i,
   leadTemp: /^(-?\d+(?:\.\d+)?)\s*\u00b0C/i,
   parenTemp: /\((-?\d+(?:\.\d+)?)\s*\u00b0C\)/i,
@@ -3821,7 +3836,8 @@ const SEVERITY_CATEGORIES = [
   ["Power", "LOW BATTERY VOLTAGE", 1, { mag: { re: SEV_RE.vbatMin, invert: true } }],
   ["Power", "NO DAYTIME CHARGING", 2, { freq: { re: SEV_RE.noCharge } }],
   ["Power", "BATTERY VOLTAGE DECLINING", 3, { mag: { re: SEV_RE.vbatDrop } }],
-  ["Data", "LOW DATA COVERAGE", 3, { mag: { re: SEV_RE.leadPct, invert: true } }],
+  ["Data", "MISSING STATION DATA", 3, { freq: { re: SEV_RE.leadHours } }],
+  ["Data", "MISSING SENSOR DATA", 4, { freq: { re: SEV_RE.leadHours } }],
   ["RH", "RH READ 0%", 4, { freq: { re: SEV_RE.readings } }],
   ["RH", "RH EXCEEDED 100%", 5, {
     freq: { re: SEV_RE.readings },
@@ -3891,7 +3907,6 @@ const SEVERITY_CATEGORIES = [
   }],
   ["Precip", "HIGH PRECIPITATION", 21, { mag: { re: SEV_RE.leadMmh } }],
   ["RH", "RH DROPPED AS LOW AS", 22, { mag: { re: SEV_RE.leadPct, invert: true } }],
-  ["Data", "UNCONFIGURED SENSORS", 22, {}],
   ["Temp", "EXTREME VALUES", 23, { mag: { re: SEV_RE.parenTemp, abs: true } }],
   ["Wind", "WIND SPEED OUTLIERS", 24, { mag: { re: SEV_RE.leadKmh } }],
   ["Wind", "GUST OUTLIERS", 24, { mag: { re: SEV_RE.leadKmh } }],
@@ -4358,7 +4373,7 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
-const GANTT_HEAD_RE = /^<b>(.+?)\s+\(\d+%\)<\/b>$/;
+const GANTT_HEAD_RE = /^<b>(.+?)(?:\s+\(\d+%\))?<\/b>$/;
 
 const GANTT_NC_RE = /^<i>(.+?) \u2715 /;
 
@@ -4535,7 +4550,7 @@ function solid(color) {
   return m ? `rgb(${m[1]}, ${m[2]}, ${m[3]})` : null;
 }
 
-function overviewRow(f, panel, columns) {
+function overviewRow(f, panel, columns, onPick) {
   const row = el("tr", "wx-ov-row");
   for (const name of columns) {
     const build = OVERVIEW_CELLS[name];
@@ -4552,7 +4567,10 @@ function overviewRow(f, panel, columns) {
   row.title = "Show " + f.station;
   row._wxStation = f.station || null;
   row._wxFinding = f;
-  row.addEventListener("click", () => toggleOverviewChart(panel, f, row));
+  row.addEventListener("click", () => {
+    if (onPick) onPick(f, row);
+    else toggleOverviewChart(panel, f, row);
+  });
   row.addEventListener("pointerenter", () => {
     if (f.tab !== DATA_TAB) prefetchDetail(f.station, f.tab);
   });
@@ -4596,6 +4614,9 @@ function sortRows(entries, column, dir) {
     const bArea = String(b.f.area || "");
     if (aArea !== bArea) {
       if (column === "Sensor") return dir * (ovAreaRank(a.f) - ovAreaRank(b.f));
+      if (aArea === DATA_AREA || bArea === DATA_AREA) {
+        return aArea === DATA_AREA ? -1 : 1;
+      }
       return (
         rank.area.get(bArea) - rank.area.get(aArea) || aArea.localeCompare(bArea)
       );
@@ -4615,7 +4636,7 @@ function sortRows(entries, column, dir) {
   });
 }
 
-function overviewTable(findings, panel, columns) {
+function overviewTable(findings, panel, columns, onPick) {
   const wrap = el("div", "wx-ov-wrap");
   const table = el("table", "wx-ov-table");
   const thead = el("thead");
@@ -4625,7 +4646,7 @@ function overviewTable(findings, panel, columns) {
   const entries = findings.map((f, i) => ({
     f: f,
     i: i,
-    row: overviewRow(f, panel, columns),
+    row: overviewRow(f, panel, columns, onPick),
   }));
   for (const e of entries) tbody.appendChild(e.row);
 
@@ -4868,13 +4889,81 @@ async function buildPower(fc, hours) {
   return box;
 }
 
+function wholeGantt(fig) {
+  const layout = Object.assign({}, fig.layout || {});
+  delete layout.width;
+  layout.autosize = true;
+  layout.height = layout.height || 420;
+  return { data: fig.data || [], layout: layout };
+}
+
+function renderGantt(g, next) {
+  const pd = g._wxPlotDiv;
+  if (!pd || !pd._wxDrawn || !pd.isConnected) return;
+  next.layout.autosize = true;
+  delete next.layout.width;
+  pd._wxRowFit = null;
+  let view = next;
+  if (isMobile()) {
+    try {
+      view = buildMobileFigure(next, { height: next.layout.height });
+    } catch (e) {
+      view = next;
+    }
+  }
+  pd.style.height = view.layout.height + "px";
+  try {
+    Plotly.react(pd, view.data, view.layout, g._wxConfig);
+  } catch (e) {
+    console.warn("gantt redraw failed", e);
+    return;
+  }
+  if (typeof g._wxResize === "function") g._wxResize();
+  if (typeof g._wxFit === "function") g._wxFit();
+}
+
+function dataGantt(fig) {
+  const g = graph(fig);
+  const node = card(g, null, { expandable: false });
+  const whole = wholeGantt(fig);
+  let picked = null;
+  let want = null;
+
+  const show = (next) => {
+    want = next;
+    g._wxOnDrawn(() => {
+      if (want === next) renderGantt(g, next);
+    });
+  };
+
+  const pick = (f, row) => {
+    if (picked === row) {
+      row.classList.remove("sel");
+      picked = null;
+      show(whole);
+      return;
+    }
+    const next = ganttForStations(fig, ganttNames(f.station));
+    if (!next) return;
+    if (picked) picked.classList.remove("sel");
+    picked = row;
+    row.classList.add("sel");
+    show(next);
+    requestAnimationFrame(() => {
+      if (picked === row) showPanel(node);
+    });
+  };
+
+  return { node: node, pick: pick };
+}
+
 async function buildData(fc, hours) {
   const c = await loadCharts(fc, hours, DATA_SUFFIX);
   const box = el("div");
-  const panel = tabPanel(null);
-  box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, panel));
-  box.appendChild(panel);
-  box.appendChild(c && c.data_gantt ? card(graph(c.data_gantt)) : unavailable());
+  const view = c && c.data_gantt ? dataGantt(c.data_gantt) : null;
+  const pick = view ? view.pick : () => {};
+  box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, null, pick));
+  box.appendChild(view ? view.node : unavailable());
   return box;
 }
 
