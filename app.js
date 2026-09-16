@@ -1247,10 +1247,16 @@ function sameRows(a, b) {
   return true;
 }
 
-function prepareScorecards(filtered) {
+function prepareScorecards(filtered, source) {
   const data = [];
   const layout = Object.assign({}, (filtered && filtered.layout) || {});
   const cards = [];
+  const srcByAxis = new Map();
+  for (const tr of source || []) {
+    if (!isHeatmap(tr) || !heatmapStationRows(tr)) continue;
+    const key = (tr.yaxis || "y") + "|" + (tr.xaxis || "x");
+    if (!srcByAxis.has(key)) srcByAxis.set(key, tr);
+  }
   ((filtered && filtered.data) || []).forEach((tr, i) => {
     if (!isHeatmap(tr) || !heatmapStationRows(tr)) {
       data.push(tr);
@@ -1264,7 +1270,14 @@ function prepareScorecards(filtered) {
       layout[ykey] = deepClone(ax);
       catKey = ykey + ".categoryarray";
     }
-    cards.push({ index: i, trace: deepClone(tr), catKey: catKey });
+    const key = (tr.yaxis || "y") + "|" + (tr.xaxis || "x");
+    const full = source ? (srcByAxis.get(key) || tr) : tr;
+    cards.push({
+      index: i,
+      trace: deepClone(full),
+      catKey: catKey,
+      defaults: source ? heatmapDefaultRows(full) : null,
+    });
   });
   return { data: data, layout: layout, cards: cards };
 }
@@ -1363,7 +1376,39 @@ function sameCells(a, b) {
   return true;
 }
 
-function scorecardUpdates(cards, current) {
+const SCORECARD_ROW_MIN_PX = 22;
+
+function scorecardRowBudget(pd, tr) {
+  if (!pd || !pd._fullLayout) return Infinity;
+  const ax = pd._fullLayout[axisLayoutKey(tr.yaxis, "y")];
+  const len = ax && ax._length;
+  if (!len || !isFinite(len)) return Infinity;
+  return Math.max(1, Math.floor(len / SCORECARD_ROW_MIN_PX));
+}
+
+function truncateScorecard(next, budget) {
+  if (!next || !Array.isArray(next.rows)) return next;
+  if (!isFinite(budget) || next.rows.length <= budget) return next;
+  if (next.z !== undefined && !Array.isArray(next.z)) return next;
+  if (next.text !== undefined && !Array.isArray(next.text)) return next;
+  const cut = (arr) => (Array.isArray(arr) ? arr.slice(0, budget) : arr);
+  const out = { rows: next.rows.slice(0, budget) };
+  if (next.z !== undefined) out.z = cut(next.z);
+  if (next.text !== undefined) out.text = cut(next.text);
+  if (next.source) {
+    const src = {};
+    for (const key of ["hovertext", "customdata"]) {
+      const v = next.source[key];
+      if (v === undefined) continue;
+      if (!Array.isArray(v)) return next;
+      src[key] = cut(v);
+    }
+    out.source = src;
+  }
+  return out;
+}
+
+function scorecardUpdates(cards, current, pd) {
   const sel = legendStationSet(current);
   const stats = sel ? pointStats(current) : null;
   const jobs = [];
@@ -1375,7 +1420,10 @@ function scorecardUpdates(cards, current) {
 
     let next = stats ? rebuildScorecard(src, stats, rows) : null;
     if (!next) {
-      const res = sel ? filterHeatmapTrace(src, sel) : { trace: src, rows: rows };
+      const keepSet = sel || (card.defaults ? new Set(card.defaults) : null);
+      const res = keepSet
+        ? filterHeatmapTrace(src, keepSet)
+        : { trace: src, rows: rows };
       if (!res.rows) continue;
       next = {
         rows: res.rows,
@@ -1384,6 +1432,8 @@ function scorecardUpdates(cards, current) {
         source: res.trace,
       };
     }
+
+    next = truncateScorecard(next, scorecardRowBudget(pd, src));
 
     const cur = current && current[card.index];
     if (cur && sameRows(heatmapStationRows(cur), next.rows) && sameCells(cur.text, next.text)) {
@@ -1760,7 +1810,7 @@ function graph(figDict, opts = {}) {
 
   const syncScorecards = () => {
     if (syncing || !cards.length || !plotDiv.data) return;
-    const res = scorecardUpdates(cards, plotDiv.data);
+    const res = scorecardUpdates(cards, plotDiv.data, plotDiv);
     if (!res.jobs.length) return;
     syncing = true;
     try {
@@ -1774,7 +1824,10 @@ function graph(figDict, opts = {}) {
 
   const draw = () => {
     const filtered = applyStationFilter({ data: fig.data || [], layout: layout }, selected);
-    const prepared = prepareScorecards(filtered);
+    const prepared = prepareScorecards(
+      filtered,
+      selected && selected.size ? null : fig.data || []
+    );
     cards = prepared.cards;
     if (mounted) {
       const next = mergeView(prepared.layout, captureView(plotDiv));
@@ -3562,13 +3615,22 @@ async function insightBanner(fc, hours, tab, panel) {
 
 const OVERVIEW_TAB = "tab-overview";
 
+const DATA_TAB = "tab-data";
+
+const DATA_SUFFIX = "data";
+
 const INSIGHT_SOURCES = [
   ["rh", "tab-rh", "RH"],
   ["wind", "tab-wind", "Wind"],
   ["temp", "tab-temp", "Temp"],
   ["rn1", "tab-rn1", "Precip"],
   ["power", "tab-power", "Power"],
+  [DATA_SUFFIX, DATA_TAB, "Data"],
 ];
+
+const OVERVIEW_EXCLUDED = new Set([
+  severityKey("Data", "UNCONFIGURED SENSORS"),
+]);
 
 const MONTH_INDEX = {
   Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -3627,9 +3689,10 @@ function parseFindings(text, source) {
     if (!line.trim()) continue;
     const colon = line.indexOf(":");
     const label = colon > 0 ? line.slice(0, colon).trim() : "";
+    const indented = /^\s/.test(line);
     const isFinding =
       !!label &&
-      colon <= FINDING_LABEL_MAX &&
+      (colon <= FINDING_LABEL_MAX || indented) &&
       label === label.toUpperCase() &&
       /[A-Z0-9]/.test(label);
     if (!isFinding) {
@@ -3686,6 +3749,7 @@ async function collectFindings(fc, hours) {
     if (!text) return;
     const palette = colorMap(palettes[i]);
     for (const f of parseFindings(text, INSIGHT_SOURCES[i])) {
+      if (OVERVIEW_EXCLUDED.has(severityKey(f.area, f.section))) continue;
       f.color = palette.get(colorKey(f.section, f.station)) || null;
       out.push(f);
     }
@@ -4254,6 +4318,11 @@ function openOverviewChart(panel, f, row) {
     });
   }
 
+  if (f.tab === DATA_TAB) {
+    mountGantt(panel, body, f, row);
+    return;
+  }
+
   const opts = detailOpts(f.station, f.tab);
   opts.maxHeight = () => overviewPlotCap(panel);
   detailModule()
@@ -4289,6 +4358,174 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
+const GANTT_HEAD_RE = /^<b>(.+?)\s+\(\d+%\)<\/b>$/;
+
+const GANTT_NC_RE = /^<i>(.+?) \u2715 /;
+
+const GANTT_SUB_PREFIX = "\u2514";
+
+const GANTT_ROW_PX = 30;
+
+const GANTT_PANEL_PAD = 104;
+
+const GANTT_PANEL_MIN = 160;
+
+function ganttNames(station) {
+  const raw = String(station == null ? "" : station);
+  const out = [raw];
+  for (const part of raw.split(/\s*,\s*/)) {
+    if (part && out.indexOf(part) < 0) out.push(part);
+  }
+  return out;
+}
+
+function ganttRowOwners(labels) {
+  const owners = [];
+  let current = null;
+  for (const raw of labels) {
+    const text = String(raw == null ? "" : raw);
+    let m = GANTT_HEAD_RE.exec(text);
+    if (m) {
+      current = m[1].trim();
+      owners.push(current);
+      continue;
+    }
+    m = GANTT_NC_RE.exec(text);
+    if (m) {
+      current = null;
+      owners.push(m[1].trim());
+      continue;
+    }
+    owners.push(text.indexOf(GANTT_SUB_PREFIX) === 0 ? current : null);
+  }
+  return owners;
+}
+
+function ganttTrace(tr, keep) {
+  const ys = tr ? decodeArray(tr.y) : null;
+  if (!ys) return null;
+  const n = ys.length;
+  const picks = [];
+  for (let i = 0; i < n; i++) {
+    const at = keep.get(Math.round(Number(ys[i])));
+    if (at !== undefined) picks.push([i, at]);
+  }
+  if (!picks.length) return null;
+  const out = Object.assign({}, tr);
+  out.y = picks.map((p) => p[1]);
+  for (const key of ["x", "base", "text", "hovertext", "customdata"]) {
+    const arr = decodeArray(tr[key]);
+    if (!arr) continue;
+    if (arr.length !== n) return null;
+    out[key] = picks.map((p) => arr[p[0]]);
+  }
+  return out;
+}
+
+function ganttForStations(fig, names) {
+  const layout = fig && fig.layout;
+  const ya = layout && layout.yaxis;
+  const labels = ya ? decodeArray(ya.ticktext) : null;
+  const vals = ya ? decodeArray(ya.tickvals) : null;
+  if (!labels || !vals || labels.length !== vals.length) return null;
+  if (!Array.isArray(fig.data)) return null;
+
+  const want = new Set(names.map(neighbourKey).filter(Boolean));
+  const owners = ganttRowOwners(labels);
+  const keep = new Map();
+  const kept = [];
+  owners.forEach((owner, i) => {
+    if (!owner || !want.has(neighbourKey(owner))) return;
+    keep.set(Math.round(Number(vals[i])), kept.length);
+    kept.push(labels[i]);
+  });
+  if (!kept.length) return null;
+
+  const data = [];
+  const groups = new Set();
+  for (const tr of fig.data) {
+    const out = ganttTrace(tr, keep);
+    if (!out) continue;
+    if (out.legendgroup) {
+      out.showlegend = !groups.has(out.legendgroup);
+      groups.add(out.legendgroup);
+    }
+    data.push(out);
+  }
+  if (!data.length) return null;
+
+  const outLayout = cloneLayout(layout);
+  delete outLayout.title;
+  outLayout.annotations = [];
+  outLayout.yaxis = Object.assign({}, outLayout.yaxis, {
+    tickvals: kept.map((_v, i) => i),
+    ticktext: kept,
+    range: [kept.length - 0.5, -0.5],
+    autorange: false,
+  });
+  outLayout.margin = Object.assign({}, outLayout.margin, { t: 24 });
+  outLayout.height = Math.max(
+    GANTT_PANEL_MIN,
+    kept.length * GANTT_ROW_PX + GANTT_PANEL_PAD
+  );
+  return { data: data, layout: outLayout };
+}
+
+function ganttMessage(body, text) {
+  body.innerHTML = "";
+  body.appendChild(ovText("div", "wx-detail-msg", text));
+}
+
+function mountGantt(panel, body, f, row) {
+  const owner = row || null;
+  const station = f.station || null;
+  const fc = state.fc;
+  const hours = state.hours;
+  const live = () =>
+    body.isConnected &&
+    panel._wxRow === owner &&
+    panel._wxStation === station &&
+    state.fc === fc &&
+    state.hours === hours;
+
+  panel._wxCleanup = () => {
+    for (const pd of panel.querySelectorAll(".wx-plot")) {
+      try { Plotly.purge(pd); } catch (e) {}
+    }
+  };
+
+  loadCharts(fc, hours, DATA_SUFFIX)
+    .then((c) => {
+      if (!live()) return;
+      if (!c || !c.data_gantt) {
+        ganttMessage(body, "Missing-data chart unavailable for this window.");
+        return;
+      }
+      const fig = ganttForStations(c.data_gantt, ganttNames(station));
+      if (!fig) {
+        ganttMessage(body, `No missing-data rows for ${station} in this window.`);
+        return;
+      }
+      const shell = panel.parentNode;
+      const inShell = !!(shell && shell.classList.contains("wx-ov-shell"));
+      const height = inShell
+        ? Math.min(fig.layout.height, overviewPlotCap(panel))
+        : fig.layout.height;
+      body.innerHTML = "";
+      body.appendChild(graph(fig, { height: height }));
+      requestAnimationFrame(() => {
+        if (!live()) return;
+        if (row) revealRow(row);
+        else showPanel(panel);
+      });
+    })
+    .catch((e) => {
+      console.warn("gantt panel failed", e);
+      if (!body.isConnected) return;
+      ganttMessage(body, "Could not load the missing-data chart.");
+    });
+}
+
 const RGBA_RE = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i;
 
 function solid(color) {
@@ -4316,7 +4553,9 @@ function overviewRow(f, panel, columns) {
   row._wxStation = f.station || null;
   row._wxFinding = f;
   row.addEventListener("click", () => toggleOverviewChart(panel, f, row));
-  row.addEventListener("pointerenter", () => prefetchDetail(f.station, f.tab));
+  row.addEventListener("pointerenter", () => {
+    if (f.tab !== DATA_TAB) prefetchDetail(f.station, f.tab);
+  });
   row.addEventListener("pointerleave", cancelPrefetch);
   return row;
 }
@@ -4526,7 +4765,7 @@ async function buildOverview(fc, hours) {
   requestAnimationFrame(sizeOverviewShell);
 
   if (!isMobile()) {
-    const first = findings[0];
+    const first = findings.find((x) => x.tab !== DATA_TAB);
     whenFree(() => {
       if (state.fc !== fc || state.hours !== hours) return;
       warmDetail(true);
@@ -4629,6 +4868,16 @@ async function buildPower(fc, hours) {
   return box;
 }
 
+async function buildData(fc, hours) {
+  const c = await loadCharts(fc, hours, DATA_SUFFIX);
+  const box = el("div");
+  const panel = tabPanel(null);
+  box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, panel));
+  box.appendChild(panel);
+  box.appendChild(c && c.data_gantt ? card(graph(c.data_gantt)) : unavailable());
+  return box;
+}
+
 let _detailModule = null;
 
 function detailModule() {
@@ -4667,6 +4916,7 @@ const TAB_SUFFIX = {
   "tab-temp": "temp",
   "tab-rn1": "rn1",
   "tab-power": "power",
+  [DATA_TAB]: DATA_SUFFIX,
 };
 
 function detailOpts(station, tabId) {
@@ -5414,6 +5664,7 @@ const TABS = [
   { id: "tab-temp",  label: "Temp",  build: buildTemp },
   { id: "tab-rn1",   label: "Precip", build: buildRn1 },
   { id: "tab-power", label: "Power", build: buildPower },
+  { id: DATA_TAB,    label: "Data",  build: buildData },
 ];
 
 const state = { fc: null, hours: 72, activeTab: OVERVIEW_TAB, range: null };
