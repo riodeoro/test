@@ -4564,7 +4564,7 @@ function ganttCompact(base, hidden) {
 }
 
 function wholeGantt(fig) {
-  const layout = Object.assign({}, fig.layout || {});
+  const layout = cloneLayout(fig.layout || {});
   delete layout.width;
   layout.autosize = true;
   layout.height = layout.height || 420;
@@ -4577,12 +4577,11 @@ function ganttView(g, base, cap) {
   let timer = null;
 
   const draw = () => {
-    let next = ganttCompact(view.base, view.hidden);
+    const built = ganttCompact(view.base, view.hidden);
+    const next = { data: built.data, layout: cloneLayout(built.layout) };
     if (typeof cap === "function") {
       const limit = cap();
-      if (limit && next.layout.height > limit) {
-        next = { data: next.data, layout: Object.assign({}, next.layout, { height: limit }) };
-      }
+      if (limit && next.layout.height > limit) next.layout.height = limit;
     }
     want = next;
     g._wxOnDrawn(() => {
@@ -4630,6 +4629,15 @@ function ganttView(g, base, cap) {
         if (key) toggle(key);
       }, delay);
       return false;
+    });
+    let resetting = false;
+    pd.on("plotly_doubleclick", () => {
+      resetting = true;
+    });
+    pd.on("plotly_relayout", () => {
+      if (!resetting) return;
+      resetting = false;
+      draw();
     });
     pd.on("plotly_legenddoubleclick", (ev) => {
       if (timer) clearTimeout(timer);
@@ -4713,7 +4721,7 @@ function mountGantt(panel, body, f, row) {
       const cap = inShell ? () => overviewPlotCap(panel) : null;
       const height = cap ? Math.min(fig.layout.height, cap()) : fig.layout.height;
       body.innerHTML = "";
-      const g = graph(fig, { height: height });
+      const g = graph({ data: fig.data, layout: cloneLayout(fig.layout) }, { height: height });
       body.appendChild(g);
       ganttView(g, fig, cap);
       requestAnimationFrame(() => {
