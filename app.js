@@ -3641,6 +3641,8 @@ const SENSOR_DATA_SECTION_RE = /^MISSING (?!STATION ).+ DATA$/;
 
 const OVERVIEW_DATA_LIMIT = 5;
 
+const DATA_STATION_TIEBREAK = 0.5;
+
 function isSensorDataSection(section) {
   return SENSOR_DATA_SECTION_RE.test(String(section || ""));
 }
@@ -3767,28 +3769,22 @@ async function collectFindings(fc, hours) {
     ),
   ]);
   const out = [];
-  const sensorRows = [];
-  let stationRows = 0;
+  const dataRows = [];
   texts.forEach((text, i) => {
     if (!text) return;
     const palette = colorMap(palettes[i]);
     for (const f of parseFindings(text, INSIGHT_SOURCES[i])) {
       f.color = palette.get(colorKey(f.section, f.station)) || null;
       if (f.area === DATA_AREA) {
-        if (isSensorDataSection(f.section)) {
-          sensorRows.push(f);
-          continue;
-        }
-        if (f.section !== STATION_DATA_SECTION) continue;
-        if (stationRows >= OVERVIEW_DATA_LIMIT) continue;
-        stationRows++;
+        if (isDataSection(f.section)) dataRows.push(f);
+        continue;
       }
       out.push(f);
     }
   });
-  sensorRows
+  applySeverity(dataRows)
     .map((f, i) => ({ f: f, i: i }))
-    .sort((a, b) => missingHours(b.f) - missingHours(a.f) || a.i - b.i)
+    .sort((a, b) => ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i)
     .slice(0, OVERVIEW_DATA_LIMIT)
     .forEach((e) => out.push(e.f));
   return applySeverity(out);
@@ -4068,6 +4064,14 @@ function applySeverity(findings) {
     if (f.ongoing) score += SEVERITY_ONGOING_BONUS;
     if (m.dry) score += SEVERITY_DRY_PERSIST_BONUS;
     f.severity = score;
+  }
+
+  for (const f of findings) {
+    if (f.area !== DATA_AREA || !isDataSection(f.section)) continue;
+    f.severity =
+      severityBase(f.area, STATION_DATA_SECTION) +
+      missingHours(f) +
+      (f.section === STATION_DATA_SECTION ? DATA_STATION_TIEBREAK : 0);
   }
 
   return findings;
@@ -4398,15 +4402,17 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
-const GANTT_HEAD_RE = /^<b>(.+?)(?:\s+\(\d+%\))?<\/b>$/;
+const GANTT_TAG_RE = /<[^>]*>/g;
 
-const GANTT_NC_RE = /^<i>(.+?) \u2715 /;
+const GANTT_PCT_RE = /\s+\(\d+%\)$/;
+
+const GANTT_NC_SEP = " \u2715 ";
 
 const GANTT_SUB_PREFIX = "\u2514";
 
-const GANTT_ROW_PX = 30;
+const GANTT_ROW_PX = 40;
 
-const GANTT_PANEL_PAD = 104;
+const GANTT_PANEL_PAD = 84;
 
 const GANTT_PANEL_MIN = 160;
 
@@ -4423,20 +4429,19 @@ function ganttRowOwners(labels) {
   const owners = [];
   let current = null;
   for (const raw of labels) {
-    const text = String(raw == null ? "" : raw);
-    let m = GANTT_HEAD_RE.exec(text);
-    if (m) {
-      current = m[1].trim();
+    const text = String(raw == null ? "" : raw).replace(GANTT_TAG_RE, "").trim();
+    if (text.indexOf(GANTT_SUB_PREFIX) === 0) {
       owners.push(current);
       continue;
     }
-    m = GANTT_NC_RE.exec(text);
-    if (m) {
+    const nc = text.indexOf(GANTT_NC_SEP);
+    if (nc > 0) {
       current = null;
-      owners.push(m[1].trim());
+      owners.push(text.slice(0, nc).trim());
       continue;
     }
-    owners.push(text.indexOf(GANTT_SUB_PREFIX) === 0 ? current : null);
+    current = text.replace(GANTT_PCT_RE, "").trim() || null;
+    owners.push(current);
   }
   return owners;
 }
@@ -4511,6 +4516,171 @@ function ganttForStations(fig, names) {
   return { data: data, layout: outLayout };
 }
 
+const GANTT_CLICK_DELAY = 300;
+
+function ganttTraceKey(tr) {
+  return String((tr && (tr.legendgroup || tr.name)) || "");
+}
+
+function ganttLegendTrace(tr) {
+  return !!tr && tr.type === "bar";
+}
+
+function ganttCompact(base, hidden) {
+  if (!base || !hidden.size || !Array.isArray(base.data)) return base;
+  const layout = base.layout || {};
+  const ya = layout.yaxis || {};
+  const labels = decodeArray(ya.ticktext);
+  const vals = decodeArray(ya.tickvals);
+  if (!labels || !vals || labels.length !== vals.length) return base;
+
+  const rowAt = new Map();
+  vals.forEach((v, i) => rowAt.set(Math.round(Number(v)), i));
+  const owners = ganttRowOwners(labels);
+
+  const dataRows = new Set();
+  for (const tr of base.data) {
+    if (!ganttLegendTrace(tr) || hidden.has(ganttTraceKey(tr))) continue;
+    for (const y of decodeArray(tr.y) || []) {
+      const i = rowAt.get(Math.round(Number(y)));
+      if (i !== undefined) dataRows.add(i);
+    }
+  }
+
+  const live = new Set();
+  dataRows.forEach((i) => {
+    if (owners[i]) live.add(neighbourKey(owners[i]));
+  });
+
+  const kept = [];
+  const keepAll = new Map();
+  const keepData = new Map();
+  labels.forEach((label, i) => {
+    const text = String(label == null ? "" : label).replace(GANTT_TAG_RE, "").trim();
+    const header =
+      text.indexOf(GANTT_SUB_PREFIX) !== 0 && text.indexOf(GANTT_NC_SEP) < 0;
+    const hasData = dataRows.has(i);
+    const show =
+      hasData || (header && !!owners[i] && live.has(neighbourKey(owners[i])));
+    if (!show) return;
+    const y = Math.round(Number(vals[i]));
+    keepAll.set(y, kept.length);
+    if (hasData) keepData.set(y, kept.length);
+    kept.push(label);
+  });
+
+  const data = [];
+  for (const tr of base.data) {
+    if (ganttLegendTrace(tr)) {
+      if (hidden.has(ganttTraceKey(tr))) {
+        data.push(Object.assign({}, tr, { visible: "legendonly" }));
+        continue;
+      }
+      const out = ganttTrace(tr, keepAll);
+      if (out) data.push(Object.assign(out, { visible: true }));
+      continue;
+    }
+    const out = ganttTrace(tr, keepData);
+    if (out) data.push(out);
+  }
+
+  const outLayout = cloneLayout(layout);
+  const n = kept.length;
+  const margin = outLayout.margin || {};
+  outLayout.yaxis = Object.assign({}, outLayout.yaxis, {
+    tickvals: kept.map((_v, i) => i),
+    ticktext: kept,
+    range: [Math.max(n, 1) - 0.5, -0.5],
+    autorange: false,
+  });
+  outLayout.height = Math.max(
+    GANTT_PANEL_MIN,
+    n * GANTT_ROW_PX + (Number(margin.t) || 0) + (Number(margin.b) || 0)
+  );
+  return { data: data, layout: outLayout };
+}
+
+function ganttView(g, base, cap) {
+  const view = { base: base, hidden: new Set() };
+  let want = null;
+  let timer = null;
+
+  const draw = () => {
+    let next = ganttCompact(view.base, view.hidden);
+    if (typeof cap === "function") {
+      const limit = cap();
+      if (limit && next.layout.height > limit) {
+        next = {
+          data: next.data,
+          layout: Object.assign({}, next.layout, { height: limit }),
+        };
+      }
+    }
+    want = next;
+    g._wxOnDrawn(() => {
+      if (want === next) renderGantt(g, next);
+    });
+  };
+
+  const keys = () => {
+    const out = [];
+    for (const tr of view.base.data || []) {
+      if (!ganttLegendTrace(tr)) continue;
+      const k = ganttTraceKey(tr);
+      if (k && out.indexOf(k) < 0) out.push(k);
+    }
+    return out;
+  };
+
+  const toggle = (key) => {
+    if (view.hidden.has(key)) view.hidden.delete(key);
+    else view.hidden.add(key);
+    draw();
+  };
+
+  const isolate = (key) => {
+    const all = keys();
+    const solo = all.every((k) => (k === key) !== view.hidden.has(k));
+    view.hidden = new Set(solo ? [] : all.filter((k) => k !== key));
+    draw();
+  };
+
+  g._wxOnDrawn(() => {
+    const pd = g._wxPlotDiv;
+    if (!pd || pd._wxGanttLegend || typeof pd.on !== "function") return;
+    pd._wxGanttLegend = true;
+    const keyOf = (ev) => {
+      const list = ev && (ev.data || ev.fullData);
+      return list ? ganttTraceKey(list[ev.curveNumber]) : "";
+    };
+    pd.on("plotly_legendclick", (ev) => {
+      const key = keyOf(ev);
+      if (timer) clearTimeout(timer);
+      const delay =
+        (pd._context && pd._context.doubleClickDelay) || GANTT_CLICK_DELAY;
+      timer = setTimeout(() => {
+        timer = null;
+        if (key) toggle(key);
+      }, delay);
+      return false;
+    });
+    pd.on("plotly_legenddoubleclick", (ev) => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      const key = keyOf(ev);
+      if (key) isolate(key);
+      return false;
+    });
+  });
+
+  view.setBase = (next) => {
+    view.base = next;
+    draw();
+  };
+
+  return view;
+}
+
 function ganttMessage(body, text) {
   body.innerHTML = "";
   body.appendChild(ovText("div", "wx-detail-msg", text));
@@ -4552,7 +4722,9 @@ function mountGantt(panel, body, f, row) {
         ? Math.min(fig.layout.height, overviewPlotCap(panel))
         : fig.layout.height;
       body.innerHTML = "";
-      body.appendChild(graph(fig, { height: height }));
+      const g = graph(fig, { height: height });
+      body.appendChild(g);
+      ganttView(g, fig, inShell ? () => overviewPlotCap(panel) : null);
       requestAnimationFrame(() => {
         if (!live()) return;
         if (row) revealRow(row);
@@ -4645,6 +4817,9 @@ function sortRows(entries, column, dir) {
       return (
         rank.area.get(bArea) - rank.area.get(aArea) || aArea.localeCompare(bArea)
       );
+    }
+    if (aArea === DATA_AREA && column !== "Type") {
+      return ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i;
     }
     const aSec = String(a.f.section || "");
     const bSec = String(b.f.section || "");
@@ -4948,24 +5123,35 @@ function renderGantt(g, next) {
 }
 
 function dataGantt(fig) {
+  ensureDetailStyles();
   const g = graph(fig);
   const node = card(g, null, { expandable: false });
   const whole = wholeGantt(fig);
+  const view = ganttView(g, whole);
   let picked = null;
-  let want = null;
 
-  const show = (next) => {
-    want = next;
-    g._wxOnDrawn(() => {
-      if (want === next) renderGantt(g, next);
-    });
+  const head = el("div", "wx-detail-head");
+  const title = el("span", "t");
+  const close = el("button", null, "Close");
+  close.type = "button";
+  head.appendChild(title);
+  head.appendChild(close);
+  head.style.display = "none";
+  node.insertBefore(head, g);
+
+  const clear = () => {
+    if (picked) picked.classList.remove("sel");
+    picked = null;
+    head.style.display = "none";
+    title.textContent = "";
+    view.setBase(whole);
   };
+
+  close.addEventListener("click", clear);
 
   const pick = (f, row) => {
     if (picked === row) {
-      row.classList.remove("sel");
-      picked = null;
-      show(whole);
+      clear();
       return;
     }
     const next = ganttForStations(fig, ganttNames(f.station));
@@ -4973,7 +5159,9 @@ function dataGantt(fig) {
     if (picked) picked.classList.remove("sel");
     picked = row;
     row.classList.add("sel");
-    show(next);
+    title.textContent = f.station;
+    head.style.display = "";
+    view.setBase(next);
     requestAnimationFrame(() => {
       if (picked === row) showPanel(node);
     });
