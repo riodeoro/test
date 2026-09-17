@@ -3633,27 +3633,26 @@ const INSIGHT_SOURCES = [
   ["power", "tab-power", "Power"],
 ];
 
-const STATION_DATA_SECTION = "MISSING STATION DATA";
-
-const SENSOR_DATA_GROUP = "MISSING SENSOR DATA";
-
-const SENSOR_DATA_SECTION_RE = /^MISSING (?!STATION ).+ DATA$/;
+const DATA_SECTION = "MISSING DATA";
 
 const OVERVIEW_DATA_LIMIT = 5;
 
-const DATA_STATION_TIEBREAK = 0.5;
+const DATA_OUTAGE_TIEBREAK = 0.5;
 
-function isSensorDataSection(section) {
-  return SENSOR_DATA_SECTION_RE.test(String(section || ""));
-}
+const MISSING_HOURS_RE = /(\d+)h\b/g;
+
+const MISSING_OUTAGE_RE = /^Outage\b/i;
 
 function isDataSection(section) {
-  return section === STATION_DATA_SECTION || isSensorDataSection(section);
+  return section === DATA_SECTION;
 }
 
 function missingHours(f) {
-  const m = /^(\d+)\s*h\b/i.exec(String(f.detail || ""));
-  return m ? Number(m[1]) : 0;
+  let max = 0;
+  for (const m of String(f.detail || "").matchAll(MISSING_HOURS_RE)) {
+    max = Math.max(max, Number(m[1]));
+  }
+  return max;
 }
 
 const MONTH_INDEX = {
@@ -3832,7 +3831,6 @@ const SEV_RE = {
   peakKmh: /peak\s+(-?\d+(?:\.\d+)?)\s*km\/h/i,
   leadKmh: /^(-?\d+(?:\.\d+)?)\s*km\/h/i,
   leadPct: /^(-?\d+(?:\.\d+)?)\s*%/i,
-  leadHours: /^(\d+)\s*h\b/i,
   leadMmh: /^(-?\d+(?:\.\d+)?)\s*mm\/h/i,
   leadTemp: /^(-?\d+(?:\.\d+)?)\s*\u00b0C/i,
   parenTemp: /\((-?\d+(?:\.\d+)?)\s*\u00b0C\)/i,
@@ -3855,8 +3853,7 @@ const SEVERITY_CATEGORIES = [
   ["Power", "LOW BATTERY VOLTAGE", 1, { mag: { re: SEV_RE.vbatMin, invert: true } }],
   ["Power", "NO DAYTIME CHARGING", 2, { freq: { re: SEV_RE.noCharge } }],
   ["Power", "BATTERY VOLTAGE DECLINING", 3, { mag: { re: SEV_RE.vbatDrop } }],
-  ["Data", "MISSING STATION DATA", 3, { freq: { re: SEV_RE.leadHours } }],
-  ["Data", "MISSING SENSOR DATA", 4, { freq: { re: SEV_RE.leadHours } }],
+  ["Data", "MISSING DATA", 3, {}],
   ["RH", "RH READ 0%", 4, { freq: { re: SEV_RE.readings } }],
   ["RH", "RH EXCEEDED 100%", 5, {
     freq: { re: SEV_RE.readings },
@@ -3932,9 +3929,7 @@ const SEVERITY_CATEGORIES = [
 ];
 
 function severityKey(area, section) {
-  const group =
-    area === DATA_AREA && isSensorDataSection(section) ? SENSOR_DATA_GROUP : section;
-  return String(area || "") + "\u0000" + String(group || "");
+  return String(area || "") + "\u0000" + String(section || "");
 }
 
 const SEVERITY_RANKS = new Map();
@@ -4069,9 +4064,9 @@ function applySeverity(findings) {
   for (const f of findings) {
     if (f.area !== DATA_AREA || !isDataSection(f.section)) continue;
     f.severity =
-      severityBase(f.area, STATION_DATA_SECTION) +
+      severityBase(f.area, f.section) +
       missingHours(f) +
-      (f.section === STATION_DATA_SECTION ? DATA_STATION_TIEBREAK : 0);
+      (MISSING_OUTAGE_RE.test(String(f.detail || "")) ? DATA_OUTAGE_TIEBREAK : 0);
   }
 
   return findings;
