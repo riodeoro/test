@@ -582,7 +582,11 @@ export function buildParcoords(
 
 const DETAIL_TIME_FORMAT = "%m-%d %H:%M";
 
-const DETAIL_GAP_MS = 7 * 24 * 3600 * 1000;
+const DETAIL_GAP_FACTOR = 3.0;
+
+const DETAIL_GAP_MIN_MS = 2 * 3600 * 1000;
+
+const DETAIL_MAX_SEGMENTS = 24;
 
 const HOVER_TEXT_COLOR = "#26231f";
 
@@ -650,35 +654,68 @@ function nearestSlot(times, t) {
   return lo;
 }
 
+function gapCuts(times) {
+  if (times.length < 3) return [];
+  const steps = [];
+  for (let i = 1; i < times.length; i++) {
+    const d = times[i] - times[i - 1];
+    if (d > 0) steps.push(d);
+  }
+  if (!steps.length) return [];
+  steps.sort((a, b) => a - b);
+  const mid = steps.length >> 1;
+  const median =
+    steps.length % 2 ? steps[mid] : (steps[mid - 1] + steps[mid]) / 2;
+  const limit = Math.max(DETAIL_GAP_FACTOR * median, DETAIL_GAP_MIN_MS);
+  const cuts = [];
+  for (let i = 1; i < times.length; i++) {
+    if (times[i] - times[i - 1] > limit) cuts.push(i);
+  }
+  return cuts;
+}
+
 function seriesTrace(series, col, alerts, opts) {
   const v = series && series[col];
   if (!v) return null;
   const circular = CIRCULAR_COLS.has(col);
   const bands = opts.withAlerts ? labelledBands(alerts) : [];
-  const x = [];
-  const y = [];
-  const text = [];
   const times = [];
-  const slots = [];
-  let prev = null;
+  const vals = [];
 
   for (let i = 0; i < series.n; i++) {
     if (!Number.isFinite(v[i])) continue;
-    const t = series.t[i];
-    if (prev !== null && t - prev > DETAIL_GAP_MS) {
-      x.push(isoStamp(t));
-      y.push(null);
-      text.push("");
-    }
-    const label = bandLabelAt(bands, t);
-    times.push(t);
-    slots.push(x.length);
-    x.push(isoStamp(t));
-    y.push(v[i]);
-    text.push(label ? `<br>${label}` : "");
-    prev = t;
+    times.push(series.t[i]);
+    vals.push(v[i]);
   }
-  if (!x.length) return null;
+  if (!times.length) return null;
+
+  const cuts = gapCuts(times);
+  const split = cuts.length > 0 && cuts.length + 1 <= DETAIL_MAX_SEGMENTS;
+  const edges = split ? [0].concat(cuts, [times.length]) : [0, times.length];
+  const breaks = split ? new Set() : new Set(cuts);
+
+  const segments = [];
+  const segOf = new Array(times.length);
+  const slotOf = new Array(times.length);
+
+  for (let s = 0; s < edges.length - 1; s++) {
+    const seg = { x: [], y: [], text: [] };
+    for (let k = edges[s]; k < edges[s + 1]; k++) {
+      const t = times[k];
+      if (breaks.has(k)) {
+        seg.x.push(isoStamp(times[k - 1] + 1000));
+        seg.y.push(null);
+        seg.text.push("");
+      }
+      const label = bandLabelAt(bands, t);
+      segOf[k] = s;
+      slotOf[k] = seg.x.length;
+      seg.x.push(isoStamp(t));
+      seg.y.push(vals[k]);
+      seg.text.push(label ? `<br>${label}` : "");
+    }
+    if (seg.x.length) segments.push(seg);
+  }
 
   const folded = new Set();
   if (opts.withAlerts) {
@@ -686,33 +723,42 @@ function seriesTrace(series, col, alerts, opts) {
       const p = opts.alertPts[k];
       const near = nearestSlot(times, p.t);
       if (near < 0 || Math.abs(times[near] - p.t) > opts.tolerance) continue;
-      const slot = slots[near];
-      text[slot] += `<br>${p.text || `Alert \u00b7 ${stampLabel(p.t)}`}`;
+      const seg = segments[segOf[near]];
+      seg.text[slotOf[near]] += `<br>${p.text || `Alert \u00b7 ${stampLabel(p.t)}`}`;
       folded.add(k);
     }
   }
 
   const value = circular ? "%{y:.0f}" : "%{y:.1f}";
-  const trace = {
-    type: "scatter",
-    x,
-    y,
-    mode: circular ? "markers" : "lines",
-    name: disp(col),
-    xaxis: "x",
-    yaxis: opts.yaxis,
-    marker: { color: opts.color, size: 3, opacity: 0.35, line: { width: 0 } },
-    line: { color: opts.color, width: 1.4, shape: "linear" },
-    connectgaps: false,
-    text,
-    hovertemplate: `${dispUnit(col)}: ${value}%{text}<extra></extra>`,
-    showlegend: false,
-  };
-  if (!circular) {
-    trace.fill = "tozeroy";
-    trace.fillcolor = opts.fillcolor;
-  }
-  return { trace, folded };
+  const traces = segments.map((seg) => {
+    const lone = seg.x.length === 1;
+    const trace = {
+      type: "scatter",
+      x: seg.x,
+      y: seg.y,
+      mode: circular ? "markers" : lone ? "lines+markers" : "lines",
+      name: disp(col),
+      xaxis: "x",
+      yaxis: opts.yaxis,
+      marker: {
+        color: opts.color,
+        size: 3,
+        opacity: circular ? 0.35 : lone ? 1 : 0.35,
+        line: { width: 0 },
+      },
+      line: { color: opts.color, width: 1.4, shape: "linear" },
+      connectgaps: false,
+      text: seg.text,
+      hovertemplate: `${dispUnit(col)}: ${value}%{text}<extra></extra>`,
+      showlegend: false,
+    };
+    if (!circular) {
+      trace.fill = "tozeroy";
+      trace.fillcolor = opts.fillcolor;
+    }
+    return trace;
+  });
+  return { traces, folded };
 }
 
 function markerTrace(points, yaxis, hoverable, showlegend, visible) {
@@ -813,7 +859,7 @@ export function buildStationDetail(
     alertPts: pts,
     tolerance,
   });
-  if (built) data.push(built.trace);
+  if (built) data.push(...built.traces);
 
   let hasSecond = !!(plotCol2 && plotCol2 !== plotCol && series[plotCol2]);
   const pts2 = hasSecond && show ? alertPoints(alerts2) : [];
@@ -827,7 +873,7 @@ export function buildStationDetail(
       alertPts: pts2,
       tolerance,
     });
-    if (built2) data.push(built2.trace);
+    if (built2) data.push(...built2.traces);
     else hasSecond = false;
   }
 
