@@ -3594,7 +3594,7 @@ async function insightBanner(fc, hours, tab, panel, onPick) {
 
   const parsed = source ? parseFindings(text || "", source) : [];
   const findings = tab === DATA_SUFFIX
-    ? parsed.filter((f) => isDataSection(f.section))
+    ? parsed.filter((f) => isDataSection(f.section) || f.section === UNCONFIGURED_SECTION)
     : parsed;
   if (!findings.length) {
     return el("div", "insight-empty", "No alerts");
@@ -3634,6 +3634,8 @@ const INSIGHT_SOURCES = [
 ];
 
 const DATA_SECTION = "MISSING DATA";
+
+const UNCONFIGURED_SECTION = "UNCONFIGURED SENSORS";
 
 const OVERVIEW_DATA_LIMIT = 5;
 
@@ -4358,7 +4360,7 @@ function openOverviewChart(panel, f, row) {
   }
 
   if (f.tab === DATA_TAB) {
-    mountGantt(panel, body, f, row);
+    mountHeat(panel, body, f, row);
     return;
   }
 
@@ -4397,291 +4399,333 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
-const GANTT_TAG_RE = /<[^>]*>/g;
+const HEAT_ALL = "All";
 
-const GANTT_PCT_RE = /\s+\(\d+%\)$/;
+const HEAT_OUTAGE_KEY = "Outage";
 
-const GANTT_NC_SEP = " \u2715 ";
+const HEAT_ROW_PX = 18;
 
-const GANTT_SUB_PREFIX = "\u2514";
+const HEAT_BREAKDOWN_ROW_PX = 26;
 
-const GANTT_ROW_PX = 40;
+const HEAT_MIN_HEIGHT = 160;
 
-const GANTT_PANEL_PAD = 84;
+const HEAT_LEVELS = 4;
 
-const GANTT_PANEL_MIN = 160;
+const HEAT_MARGIN = { l: 120, r: 16, t: 64, b: 12 };
 
-function ganttNames(station) {
-  const raw = String(station == null ? "" : station);
-  const out = [raw];
-  for (const part of raw.split(/\s*,\s*/)) {
-    if (part && out.indexOf(part) < 0) out.push(part);
-  }
+const HEAT_COMPLETE = "#f3f2ef";
+
+const HEAT_PRE = "#d6d3ce";
+
+const HEAT_SENSOR = ["#fdecc8", "#fbc774", "#f59e0b", "#b45309"];
+
+const HEAT_OUTAGE = ["#fecaca", "#f87171", "#dc2626", "#991b1b"];
+
+const HEAT_Z_PRE = 1;
+
+const HEAT_Z_SENSOR = 1;
+
+const HEAT_Z_OUTAGE = 5;
+
+const HEAT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const HEAT_SCALE = (() => {
+  const colors = [HEAT_COMPLETE, HEAT_PRE].concat(HEAT_SENSOR, HEAT_OUTAGE);
+  const out = [];
+  colors.forEach((c, k) => {
+    out.push([k / colors.length, c]);
+    out.push([(k + 1) / colors.length, c]);
+  });
   return out;
+})();
+
+function ensureHeatStyles() {
+  if (document.getElementById("wx-heat-styles")) return;
+  const st = document.createElement("style");
+  st.id = "wx-heat-styles";
+  st.textContent = [
+    ".wx-heat-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:2px 0 6px;}",
+    ".wx-heat-chips{display:flex;flex-wrap:wrap;gap:6px;}",
+    ".wx-heat-chip{font-size:12px;font-weight:500;padding:3px 10px;border-radius:999px;}",
+    ".wx-heat-chip.on{background:#eef4ff;border-color:#2563eb;color:#1d4ed8;}",
+    ".wx-heat-legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;",
+    "color:var(--text-muted,#8a857d);}",
+    ".wx-heat-key{display:inline-flex;align-items:center;gap:4px;}",
+    ".wx-heat-sw{display:inline-block;width:10px;height:10px;border-radius:2px;}",
+  ].join("");
+  document.head.appendChild(st);
 }
 
-function ganttRowOwners(labels) {
-  const owners = [];
-  let current = null;
-  for (const raw of labels) {
-    const text = String(raw == null ? "" : raw).replace(GANTT_TAG_RE, "").trim();
-    if (text.indexOf(GANTT_SUB_PREFIX) === 0) {
-      owners.push(current);
-      continue;
-    }
-    const nc = text.indexOf(GANTT_NC_SEP);
-    if (nc > 0) {
-      current = null;
-      owners.push(text.slice(0, nc).trim());
-      continue;
-    }
-    current = text.replace(GANTT_PCT_RE, "").trim() || null;
-    owners.push(current);
-  }
-  return owners;
+function heatLevel(hours, len) {
+  if (!(hours > 0) || !(len > 0)) return 0;
+  return Math.max(1, Math.min(HEAT_LEVELS, Math.ceil((hours / len) * HEAT_LEVELS)));
 }
 
-function ganttTrace(tr, keep) {
-  const ys = tr ? decodeArray(tr.y) : null;
-  if (!ys) return null;
-  const n = ys.length;
-  const picks = [];
-  for (let i = 0; i < n; i++) {
-    const at = keep.get(Math.round(Number(ys[i])));
-    if (at !== undefined) picks.push([i, at]);
-  }
-  if (!picks.length) return null;
-  const out = Object.assign({}, tr);
-  out.y = picks.map((p) => p[1]);
-  for (const key of ["x", "base", "text", "hovertext", "customdata"]) {
-    const arr = decodeArray(tr[key]);
-    if (!arr) continue;
-    if (arr.length !== n) return null;
-    out[key] = picks.map((p) => arr[p[0]]);
-  }
-  return out;
+function heatParse(stamp) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(stamp || ""));
+  if (!m) return null;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
 }
 
-function ganttForStations(fig, names) {
-  const layout = fig && fig.layout;
-  const ya = layout && layout.yaxis;
-  const labels = ya ? decodeArray(ya.ticktext) : null;
-  const vals = ya ? decodeArray(ya.tickvals) : null;
-  if (!labels || !vals || labels.length !== vals.length) return null;
-  if (!Array.isArray(fig.data)) return null;
+function heatIso(ms) {
+  const d = new Date(ms);
+  const p = (v) => String(v).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
 
-  const want = new Set(names.map(neighbourKey).filter(Boolean));
-  const owners = ganttRowOwners(labels);
-  const keep = new Map();
-  const kept = [];
-  owners.forEach((owner, i) => {
-    if (!owner || !want.has(neighbourKey(owner))) return;
-    keep.set(Math.round(Number(vals[i])), kept.length);
-    kept.push(labels[i]);
+function heatDay(ms) {
+  const d = new Date(ms);
+  return `${HEAT_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+function heatClock(ms) {
+  const d = new Date(ms);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+function heatBinStart(d, j) {
+  return heatParse(d.bin_starts[j]);
+}
+
+function heatBinLabel(d, j) {
+  const start = heatBinStart(d, j);
+  if (start === null) return "";
+  const len = Number(d.bin_lengths[j]) || Number(d.bin_hours) || 1;
+  const end = start + len * 3600000;
+  if (Number(d.bin_hours) >= 24) {
+    const last = end - 3600000;
+    return heatDay(start) === heatDay(last)
+      ? heatDay(start)
+      : `${heatDay(start)} \u2013 ${heatDay(last)}`;
+  }
+  if (heatDay(start) === heatDay(end)) {
+    return `${heatDay(start)} ${heatClock(start)}\u2013${heatClock(end)}`;
+  }
+  return `${heatDay(start)} ${heatClock(start)} \u2013 ${heatDay(end)} ${heatClock(end)}`;
+}
+
+function heatMid(d, j) {
+  const start = heatBinStart(d, j);
+  const len = Number(d.bin_lengths[j]) || Number(d.bin_hours) || 1;
+  return start === null ? null : heatIso(start + (len * 3600000) / 2);
+}
+
+function heatSum(arr) {
+  let t = 0;
+  for (const v of arr || []) t += Number(v) || 0;
+  return t;
+}
+
+function heatSensors(d) {
+  return (d.sensor_order || []).filter((k) => d.sensors && d.sensors[k]);
+}
+
+function heatStationIndex(d, station) {
+  const want = neighbourKey(station);
+  if (!want) return -1;
+  return (d.stations || []).findIndex((s) => neighbourKey(s) === want);
+}
+
+function heatCell(d, i, j, filter) {
+  const len = Number(d.bin_lengths[j]) || 0;
+  const pre = Number(d.pre[i][j]) || 0;
+  let out = 0;
+  let sens = 0;
+  if (filter === HEAT_ALL || filter === HEAT_OUTAGE_KEY) out = Number(d.outage[i][j]) || 0;
+  if (filter === HEAT_ALL) {
+    for (const k of heatSensors(d)) sens = Math.max(sens, Number(d.sensors[k][i][j]) || 0);
+  } else if (filter !== HEAT_OUTAGE_KEY && d.sensors[filter]) {
+    sens = Number(d.sensors[filter][i][j]) || 0;
+  }
+  if (out > 0) return HEAT_Z_OUTAGE + heatLevel(out, len);
+  if (sens > 0) return HEAT_Z_SENSOR + heatLevel(sens, len);
+  if (pre * 2 >= len && len > 0) return HEAT_Z_PRE;
+  return 0;
+}
+
+function heatRowVisible(d, i, filter) {
+  if (filter === HEAT_ALL) {
+    if (heatSum(d.outage[i]) > 0) return true;
+    if (heatSensors(d).some((k) => heatSum(d.sensors[k][i]) > 0)) return true;
+    return heatSum(d.pre[i]) >= heatSum(d.bin_lengths) && heatSum(d.bin_lengths) > 0;
+  }
+  if (filter === HEAT_OUTAGE_KEY) return heatSum(d.outage[i]) > 0;
+  return !!d.sensors[filter] && heatSum(d.sensors[filter][i]) > 0;
+}
+
+function heatHover(d, i, j, only) {
+  const len = Number(d.bin_lengths[j]) || 0;
+  const pre = Number(d.pre[i][j]) || 0;
+  const parts = [];
+  const out = Number(d.outage[i][j]) || 0;
+  if (out > 0 && (!only || only === HEAT_OUTAGE_KEY)) parts.push(`Outage ${out}h`);
+  for (const k of heatSensors(d)) {
+    if (only && only !== k) continue;
+    const h = Number(d.sensors[k][i][j]) || 0;
+    if (h > 0) parts.push(`${k} ${h}h`);
+  }
+  let body;
+  if (parts.length) body = "Missing: " + parts.join(", ");
+  else if (pre * 2 >= len && len > 0) body = "Before first report";
+  else body = "Complete";
+  const head = only ? `${d.stations[i]} \u00b7 ${only}` : d.stations[i];
+  return `<b>${head}</b><br>${heatBinLabel(d, j)}<br>${body}`;
+}
+
+function heatPlot(d, labels, z, text, rowPx, emptyText) {
+  const n = labels.length;
+  const style = d.style || {};
+  const layout = {
+    title: {
+      text: `<b>${d.title || "Missing Data"}</b>`,
+      x: 0,
+      xanchor: "left",
+      xref: "paper",
+      font: { size: style.title_size || 13, color: style.title_color || "#475569" },
+    },
+    font: style.font_family ? { family: style.font_family } : undefined,
+    margin: Object.assign({}, HEAT_MARGIN),
+    height: Math.max(HEAT_MIN_HEIGHT, n * rowPx + HEAT_MARGIN.t + HEAT_MARGIN.b),
+    xaxis: {
+      type: "date",
+      side: "top",
+      range: [d.window_start, d.window_end],
+      showgrid: false,
+      zeroline: false,
+      tickfont: { size: 11 },
+    },
+    yaxis: {
+      tickvals: labels.map((_v, i) => i),
+      ticktext: labels,
+      range: [Math.max(n, 1) - 0.5, -0.5],
+      autorange: false,
+      showgrid: false,
+      zeroline: false,
+      tickfont: { size: 11 },
+    },
+    plot_bgcolor: "rgba(0,0,0,0)",
+    showlegend: false,
+  };
+  if (!n) {
+    layout.annotations = [{
+      text: emptyText,
+      showarrow: false,
+      xref: "paper",
+      yref: "paper",
+      x: 0.5,
+      y: 0.5,
+      font: { size: 12, color: "#8a857d" },
+    }];
+    return { data: [], layout: layout };
+  }
+  const trace = {
+    type: "heatmap",
+    x: d.bin_starts.map((_v, j) => heatMid(d, j)),
+    y: labels.map((_v, i) => i),
+    z: z,
+    text: text,
+    hovertemplate: "%{text}<extra></extra>",
+    colorscale: HEAT_SCALE,
+    zmin: -0.5,
+    zmax: HEAT_SCALE.length / 2 - 0.5,
+    showscale: false,
+    xgap: 1,
+    ygap: 1,
+  };
+  return { data: [trace], layout: layout };
+}
+
+function heatFigure(d, filter) {
+  const rows = [];
+  (d.stations || []).forEach((_s, i) => {
+    if (heatRowVisible(d, i, filter)) rows.push(i);
   });
-  if (!kept.length) return null;
+  const cols = d.bin_starts.map((_v, j) => j);
+  const z = rows.map((i) => cols.map((j) => heatCell(d, i, j, filter)));
+  const text = rows.map((i) => cols.map((j) => heatHover(d, i, j, null)));
+  const empty = filter === HEAT_ALL
+    ? "No missing data in this window"
+    : `No stations missing ${filter} data`;
+  return heatPlot(d, rows.map((i) => d.stations[i]), z, text, HEAT_ROW_PX, empty);
+}
 
-  const data = [];
-  const groups = new Set();
-  for (const tr of fig.data) {
-    const out = ganttTrace(tr, keep);
-    if (!out) continue;
-    if (out.legendgroup) {
-      out.showlegend = !groups.has(out.legendgroup);
-      groups.add(out.legendgroup);
-    }
-    data.push(out);
+function heatStationFigure(d, idx) {
+  const cats = [];
+  if (heatSum(d.outage[idx]) > 0) cats.push([HEAT_OUTAGE_KEY, d.outage[idx], HEAT_Z_OUTAGE]);
+  for (const k of heatSensors(d)) {
+    if (heatSum(d.sensors[k][idx]) > 0) cats.push([k, d.sensors[k][idx], HEAT_Z_SENSOR]);
   }
-  if (!data.length) return null;
-
-  const outLayout = cloneLayout(layout);
-  delete outLayout.title;
-  outLayout.annotations = [];
-  outLayout.yaxis = Object.assign({}, outLayout.yaxis, {
-    tickvals: kept.map((_v, i) => i),
-    ticktext: kept,
-    range: [kept.length - 0.5, -0.5],
-    autorange: false,
-  });
-  outLayout.margin = Object.assign({}, outLayout.margin, { t: 24 });
-  outLayout.height = Math.max(
-    GANTT_PANEL_MIN,
-    kept.length * GANTT_ROW_PX + GANTT_PANEL_PAD
+  const cols = d.bin_starts.map((_v, j) => j);
+  const z = cats.map(([, row, base]) => cols.map((j) => {
+    const len = Number(d.bin_lengths[j]) || 0;
+    const h = Number(row[j]) || 0;
+    if (h > 0) return base + heatLevel(h, len);
+    const pre = Number(d.pre[idx][j]) || 0;
+    return pre * 2 >= len && len > 0 ? HEAT_Z_PRE : 0;
+  }));
+  const text = cats.map(([key]) => cols.map((j) => heatHover(d, idx, j, key)));
+  return heatPlot(
+    d,
+    cats.map(([key]) => key),
+    z,
+    text,
+    HEAT_BREAKDOWN_ROW_PX,
+    `No missing data for ${d.stations[idx]} in this window`
   );
-  return { data: data, layout: outLayout };
 }
 
-const GANTT_CLICK_DELAY = 300;
-
-function ganttTraceKey(tr) {
-  return String((tr && (tr.legendgroup || tr.name)) || "");
-}
-
-function ganttLegendTrace(tr) {
-  return !!tr && tr.type === "bar";
-}
-
-function ganttCompact(base, hidden) {
-  if (!base || !hidden.size || !Array.isArray(base.data)) return base;
-  const layout = base.layout || {};
-  const ya = layout.yaxis || {};
-  const labels = decodeArray(ya.ticktext);
-  const vals = decodeArray(ya.tickvals);
-  if (!labels || !vals || labels.length !== vals.length) return base;
-
-  const rowAt = new Map();
-  vals.forEach((v, i) => rowAt.set(Math.round(Number(v)), i));
-  const owners = ganttRowOwners(labels);
-
-  const dataRows = new Set();
-  for (const tr of base.data) {
-    if (!ganttLegendTrace(tr) || hidden.has(ganttTraceKey(tr))) continue;
-    for (const y of decodeArray(tr.y) || []) {
-      const i = rowAt.get(Math.round(Number(y)));
-      if (i !== undefined) dataRows.add(i);
+function heatLegend() {
+  const legend = el("div", "wx-heat-legend");
+  const key = (colors, label) => {
+    const k = el("span", "wx-heat-key");
+    for (const c of colors) {
+      const sw = el("span", "wx-heat-sw");
+      sw.style.background = c;
+      if (c === HEAT_COMPLETE) sw.style.border = "1px solid #e8e6e3";
+      k.appendChild(sw);
     }
-  }
-
-  const live = new Set();
-  dataRows.forEach((i) => {
-    if (owners[i]) live.add(neighbourKey(owners[i]));
-  });
-
-  const kept = [];
-  const keepAll = new Map();
-  const keepData = new Map();
-  labels.forEach((label, i) => {
-    const text = String(label == null ? "" : label).replace(GANTT_TAG_RE, "").trim();
-    const header =
-      text.indexOf(GANTT_SUB_PREFIX) !== 0 && text.indexOf(GANTT_NC_SEP) < 0;
-    const hasData = dataRows.has(i);
-    const show =
-      hasData || (header && !!owners[i] && live.has(neighbourKey(owners[i])));
-    if (!show) return;
-    const y = Math.round(Number(vals[i]));
-    keepAll.set(y, kept.length);
-    if (hasData) keepData.set(y, kept.length);
-    kept.push(label);
-  });
-
-  const data = [];
-  for (const tr of base.data) {
-    if (ganttLegendTrace(tr)) {
-      if (hidden.has(ganttTraceKey(tr))) {
-        data.push(Object.assign({}, tr, { visible: "legendonly" }));
-        continue;
-      }
-      const out = ganttTrace(tr, keepAll);
-      if (out) data.push(Object.assign(out, { visible: true }));
-      continue;
-    }
-    const out = ganttTrace(tr, keepData);
-    if (out) data.push(out);
-  }
-
-  const outLayout = cloneLayout(layout);
-  const n = kept.length;
-  const margin = outLayout.margin || {};
-  outLayout.yaxis = Object.assign({}, outLayout.yaxis, {
-    tickvals: kept.map((_v, i) => i),
-    ticktext: kept,
-    range: [Math.max(n, 1) - 0.5, -0.5],
-    autorange: false,
-  });
-  outLayout.height = Math.max(
-    GANTT_PANEL_MIN,
-    n * GANTT_ROW_PX + (Number(margin.t) || 0) + (Number(margin.b) || 0)
-  );
-  return { data: data, layout: outLayout };
+    k.appendChild(ovText("span", null, label));
+    legend.appendChild(k);
+  };
+  key([HEAT_OUTAGE[0], HEAT_OUTAGE[HEAT_LEVELS - 1]], "Outage");
+  key([HEAT_SENSOR[0], HEAT_SENSOR[HEAT_LEVELS - 1]], "Sensor gaps");
+  key([HEAT_COMPLETE], "Complete");
+  key([HEAT_PRE], "Before first report");
+  legend.appendChild(ovText("span", null, "Darker means more hours missing"));
+  return legend;
 }
 
-function ganttView(g, base, cap) {
-  const view = { base: base, hidden: new Set() };
-  let want = null;
-  let timer = null;
-
-  const draw = () => {
-    let next = ganttCompact(view.base, view.hidden);
-    if (typeof cap === "function") {
-      const limit = cap();
-      if (limit && next.layout.height > limit) {
-        next = {
-          data: next.data,
-          layout: Object.assign({}, next.layout, { height: limit }),
-        };
-      }
-    }
-    want = next;
-    g._wxOnDrawn(() => {
-      if (want === next) renderGantt(g, next);
-    });
-  };
-
-  const keys = () => {
-    const out = [];
-    for (const tr of view.base.data || []) {
-      if (!ganttLegendTrace(tr)) continue;
-      const k = ganttTraceKey(tr);
-      if (k && out.indexOf(k) < 0) out.push(k);
-    }
-    return out;
-  };
-
-  const toggle = (key) => {
-    if (view.hidden.has(key)) view.hidden.delete(key);
-    else view.hidden.add(key);
-    draw();
-  };
-
-  const isolate = (key) => {
-    const all = keys();
-    const solo = all.every((k) => (k === key) !== view.hidden.has(k));
-    view.hidden = new Set(solo ? [] : all.filter((k) => k !== key));
-    draw();
-  };
-
-  g._wxOnDrawn(() => {
-    const pd = g._wxPlotDiv;
-    if (!pd || pd._wxGanttLegend || typeof pd.on !== "function") return;
-    pd._wxGanttLegend = true;
-    const keyOf = (ev) => {
-      const list = ev && (ev.data || ev.fullData);
-      return list ? ganttTraceKey(list[ev.curveNumber]) : "";
-    };
-    pd.on("plotly_legendclick", (ev) => {
-      const key = keyOf(ev);
-      if (timer) clearTimeout(timer);
-      const delay =
-        (pd._context && pd._context.doubleClickDelay) || GANTT_CLICK_DELAY;
-      timer = setTimeout(() => {
-        timer = null;
-        if (key) toggle(key);
-      }, delay);
-      return false;
-    });
-    pd.on("plotly_legenddoubleclick", (ev) => {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      const key = keyOf(ev);
-      if (key) isolate(key);
-      return false;
-    });
-  });
-
-  view.setBase = (next) => {
-    view.base = next;
-    draw();
-  };
-
-  return view;
-}
-
-function ganttMessage(body, text) {
+function heatMessage(body, text) {
   body.innerHTML = "";
   body.appendChild(ovText("div", "wx-detail-msg", text));
 }
 
-function mountGantt(panel, body, f, row) {
+function renderPlot(g, next) {
+  const pd = g._wxPlotDiv;
+  if (!pd || !pd._wxDrawn || !pd.isConnected) return;
+  next.layout.autosize = true;
+  delete next.layout.width;
+  pd._wxRowFit = null;
+  let view = next;
+  if (isMobile()) {
+    try {
+      view = buildMobileFigure(next, { height: next.layout.height });
+    } catch (e) {
+      view = next;
+    }
+  }
+  pd.style.height = view.layout.height + "px";
+  try {
+    Plotly.react(pd, view.data, view.layout, g._wxConfig);
+  } catch (e) {
+    console.warn("plot redraw failed", e);
+    return;
+  }
+  if (typeof g._wxResize === "function") g._wxResize();
+  if (typeof g._wxFit === "function") g._wxFit();
+}
+
+function mountHeat(panel, body, f, row) {
   const owner = row || null;
   const station = f.station || null;
   const fc = state.fc;
@@ -4702,24 +4746,28 @@ function mountGantt(panel, body, f, row) {
   loadCharts(fc, hours, DATA_SUFFIX)
     .then((c) => {
       if (!live()) return;
-      if (!c || !c.data_gantt) {
-        ganttMessage(body, "Missing-data chart unavailable for this window.");
+      const d = c && c.data_heatmap;
+      if (!d || !Array.isArray(d.stations)) {
+        heatMessage(body, (d && d.message) || "Missing-data chart unavailable for this window.");
         return;
       }
-      const fig = ganttForStations(c.data_gantt, ganttNames(station));
-      if (!fig) {
-        ganttMessage(body, `No missing-data rows for ${station} in this window.`);
+      const idx = heatStationIndex(d, station);
+      if (idx < 0) {
+        heatMessage(body, `No missing-data rows for ${station} in this window.`);
         return;
       }
+      ensureHeatStyles();
+      const fig = heatStationFigure(d, idx);
       const shell = panel.parentNode;
       const inShell = !!(shell && shell.classList.contains("wx-ov-shell"));
       const height = inShell
         ? Math.min(fig.layout.height, overviewPlotCap(panel))
         : fig.layout.height;
       body.innerHTML = "";
-      const g = graph(fig, { height: height });
-      body.appendChild(g);
-      ganttView(g, fig, inShell ? () => overviewPlotCap(panel) : null);
+      const bar = el("div", "wx-heat-bar");
+      bar.appendChild(heatLegend());
+      body.appendChild(bar);
+      body.appendChild(graph(fig, { height: height }));
       requestAnimationFrame(() => {
         if (!live()) return;
         if (row) revealRow(row);
@@ -4727,9 +4775,9 @@ function mountGantt(panel, body, f, row) {
       });
     })
     .catch((e) => {
-      console.warn("gantt panel failed", e);
+      console.warn("missing-data panel failed", e);
       if (!body.isConnected) return;
-      ganttMessage(body, "Could not load the missing-data chart.");
+      heatMessage(body, "Could not load the missing-data chart.");
     });
 }
 
@@ -5084,46 +5132,16 @@ async function buildPower(fc, hours) {
   return box;
 }
 
-function wholeGantt(fig) {
-  const layout = Object.assign({}, fig.layout || {});
-  delete layout.width;
-  layout.autosize = true;
-  layout.height = layout.height || 420;
-  return { data: fig.data || [], layout: layout };
-}
-
-function renderGantt(g, next) {
-  const pd = g._wxPlotDiv;
-  if (!pd || !pd._wxDrawn || !pd.isConnected) return;
-  next.layout.autosize = true;
-  delete next.layout.width;
-  pd._wxRowFit = null;
-  let view = next;
-  if (isMobile()) {
-    try {
-      view = buildMobileFigure(next, { height: next.layout.height });
-    } catch (e) {
-      view = next;
-    }
-  }
-  pd.style.height = view.layout.height + "px";
-  try {
-    Plotly.react(pd, view.data, view.layout, g._wxConfig);
-  } catch (e) {
-    console.warn("gantt redraw failed", e);
-    return;
-  }
-  if (typeof g._wxResize === "function") g._wxResize();
-  if (typeof g._wxFit === "function") g._wxFit();
-}
-
-function dataGantt(fig) {
+function dataHeatmap(d) {
   ensureDetailStyles();
-  const g = graph(fig);
-  const node = card(g, null, { expandable: false });
-  const whole = wholeGantt(fig);
-  const view = ganttView(g, whole);
+  ensureHeatStyles();
+  let filter = HEAT_ALL;
   let picked = null;
+  let pickedIdx = -1;
+  let want = null;
+
+  const g = graph(heatFigure(d, filter));
+  const node = card(g, null, { expandable: false });
 
   const head = el("div", "wx-detail-head");
   const title = el("span", "t");
@@ -5132,14 +5150,46 @@ function dataGantt(fig) {
   head.appendChild(title);
   head.appendChild(close);
   head.style.display = "none";
+
+  const bar = el("div", "wx-heat-bar");
+  const chips = el("div", "wx-heat-chips");
+  const keys = [HEAT_ALL];
+  if ((d.outage || []).some((r) => heatSum(r) > 0)) keys.push(HEAT_OUTAGE_KEY);
+  for (const k of heatSensors(d)) keys.push(k);
+  const buttons = keys.map((key) => {
+    const b = el("button", "wx-heat-chip");
+    b.type = "button";
+    b.textContent = key;
+    b.addEventListener("click", () => {
+      filter = key;
+      sync();
+    });
+    chips.appendChild(b);
+    return b;
+  });
+  bar.appendChild(chips);
+  bar.appendChild(heatLegend());
+
   node.insertBefore(head, g);
+  node.insertBefore(bar, g);
+
+  const sync = () => {
+    buttons.forEach((b, i) => b.classList.toggle("on", keys[i] === filter));
+    chips.style.display = pickedIdx >= 0 ? "none" : "";
+    const next = pickedIdx >= 0 ? heatStationFigure(d, pickedIdx) : heatFigure(d, filter);
+    want = next;
+    g._wxOnDrawn(() => {
+      if (want === next) renderPlot(g, next);
+    });
+  };
 
   const clear = () => {
     if (picked) picked.classList.remove("sel");
     picked = null;
+    pickedIdx = -1;
     head.style.display = "none";
     title.textContent = "";
-    view.setBase(whole);
+    sync();
   };
 
   close.addEventListener("click", clear);
@@ -5149,29 +5199,34 @@ function dataGantt(fig) {
       clear();
       return;
     }
-    const next = ganttForStations(fig, ganttNames(f.station));
-    if (!next) return;
+    const idx = heatStationIndex(d, f.station);
+    if (idx < 0) return;
     if (picked) picked.classList.remove("sel");
     picked = row;
+    pickedIdx = idx;
     row.classList.add("sel");
-    title.textContent = f.station;
+    title.textContent = d.stations[idx];
     head.style.display = "";
-    view.setBase(next);
+    sync();
     requestAnimationFrame(() => {
       if (picked === row) showPanel(node);
     });
   };
 
+  buttons.forEach((b, i) => b.classList.toggle("on", keys[i] === filter));
   return { node: node, pick: pick };
 }
 
 async function buildData(fc, hours) {
   const c = await loadCharts(fc, hours, DATA_SUFFIX);
+  const d = c && c.data_heatmap;
   const box = el("div");
-  const view = c && c.data_gantt ? dataGantt(c.data_gantt) : null;
+  const view = d && Array.isArray(d.stations) ? dataHeatmap(d) : null;
   const pick = view ? view.pick : () => {};
   box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, null, pick));
-  box.appendChild(view ? view.node : unavailable());
+  if (view) box.appendChild(view.node);
+  else if (d && d.message) box.appendChild(card(ovText("div", "unavailable", d.message), null, { expandable: false }));
+  else box.appendChild(unavailable());
   return box;
 }
 
