@@ -4360,7 +4360,7 @@ function openOverviewChart(panel, f, row) {
   }
 
   if (f.tab === DATA_TAB) {
-    mountHeat(panel, body, f, row);
+    mountTimeline(panel, body, f, row);
     return;
   }
 
@@ -4399,181 +4399,186 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
-const HEAT_ALL = "All";
+const TL_OUTAGE = "Outage";
 
-const HEAT_OUTAGE_KEY = "Outage";
+const TL_PRE = "Before first report";
 
-const HEAT_ROW_PX = 18;
+const TL_ROW_PX = 40;
 
-const HEAT_BREAKDOWN_ROW_PX = 26;
+const TL_MIN_HEIGHT = 300;
 
-const HEAT_MIN_HEIGHT = 160;
+const TL_MARGIN = { l: 120, r: 40, t: 60, b: 60 };
 
-const HEAT_LEVELS = 4;
+const TL_MIN_FRACTION = 0.004;
 
-const HEAT_MARGIN = { l: 120, r: 16, t: 64, b: 12 };
+const TL_LABEL_FRACTION = 0.02;
 
-const HEAT_COMPLETE = "#f3f2ef";
+const TL_CLICK_DELAY = 300;
 
-const HEAT_PRE = "#d6d3ce";
+const TL_HOUR_MS = 3600000;
 
-const HEAT_SENSOR = ["#fdecc8", "#fbc774", "#f59e0b", "#b45309"];
+const TL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const HEAT_OUTAGE = ["#fecaca", "#f87171", "#dc2626", "#991b1b"];
-
-const HEAT_Z_PRE = 1;
-
-const HEAT_Z_SENSOR = 1;
-
-const HEAT_Z_OUTAGE = 5;
-
-const HEAT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-const HEAT_SCALE = (() => {
-  const colors = [HEAT_COMPLETE, HEAT_PRE].concat(HEAT_SENSOR, HEAT_OUTAGE);
-  const out = [];
-  colors.forEach((c, k) => {
-    out.push([k / colors.length, c]);
-    out.push([(k + 1) / colors.length, c]);
-  });
-  return out;
-})();
-
-function ensureHeatStyles() {
-  if (document.getElementById("wx-heat-styles")) return;
-  const st = document.createElement("style");
-  st.id = "wx-heat-styles";
-  st.textContent = [
-    ".wx-heat-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:2px 0 6px;}",
-    ".wx-heat-chips{display:flex;flex-wrap:wrap;gap:6px;}",
-    ".wx-heat-chip{font-size:12px;font-weight:500;padding:3px 10px;border-radius:999px;}",
-    ".wx-heat-chip.on{background:#eef4ff;border-color:#2563eb;color:#1d4ed8;}",
-    ".wx-heat-legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;",
-    "color:var(--text-muted,#8a857d);}",
-    ".wx-heat-key{display:inline-flex;align-items:center;gap:4px;}",
-    ".wx-heat-sw{display:inline-block;width:10px;height:10px;border-radius:2px;}",
-  ].join("");
-  document.head.appendChild(st);
-}
-
-function heatLevel(hours, len) {
-  if (!(hours > 0) || !(len > 0)) return 0;
-  return Math.max(1, Math.min(HEAT_LEVELS, Math.ceil((hours / len) * HEAT_LEVELS)));
-}
-
-function heatParse(stamp) {
+function tlParse(stamp) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(stamp || ""));
   if (!m) return null;
   return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
 }
 
-function heatIso(ms) {
+function tlIso(ms) {
   const d = new Date(ms);
   const p = (v) => String(v).padStart(2, "0");
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
 }
 
-function heatDay(ms) {
+function tlDay(ms) {
   const d = new Date(ms);
-  return `${HEAT_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  return `${TL_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
-function heatClock(ms) {
+function tlClock(ms) {
   const d = new Date(ms);
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
-function heatBinStart(d, j) {
-  return heatParse(d.bin_starts[j]);
-}
-
-function heatBinLabel(d, j) {
-  const start = heatBinStart(d, j);
-  if (start === null) return "";
-  const len = Number(d.bin_lengths[j]) || Number(d.bin_hours) || 1;
-  const end = start + len * 3600000;
-  if (Number(d.bin_hours) >= 24) {
-    const last = end - 3600000;
-    return heatDay(start) === heatDay(last)
-      ? heatDay(start)
-      : `${heatDay(start)} \u2013 ${heatDay(last)}`;
+function tlRange(start, end) {
+  if (tlDay(start) === tlDay(end)) {
+    return `${tlDay(start)} ${tlClock(start)}\u2013${tlClock(end)}`;
   }
-  if (heatDay(start) === heatDay(end)) {
-    return `${heatDay(start)} ${heatClock(start)}\u2013${heatClock(end)}`;
-  }
-  return `${heatDay(start)} ${heatClock(start)} \u2013 ${heatDay(end)} ${heatClock(end)}`;
+  return `${tlDay(start)} ${tlClock(start)} \u2013 ${tlDay(end)} ${tlClock(end)}`;
 }
 
-function heatMid(d, j) {
-  const start = heatBinStart(d, j);
-  const len = Number(d.bin_lengths[j]) || Number(d.bin_hours) || 1;
-  return start === null ? null : heatIso(start + (len * 3600000) / 2);
-}
-
-function heatSum(arr) {
-  let t = 0;
-  for (const v of arr || []) t += Number(v) || 0;
-  return t;
-}
-
-function heatSensors(d) {
-  return (d.sensor_order || []).filter((k) => d.sensors && d.sensors[k]);
-}
-
-function heatStationIndex(d, station) {
+function tlStationIndex(d, station) {
   const want = neighbourKey(station);
   if (!want) return -1;
   return (d.stations || []).findIndex((s) => neighbourKey(s) === want);
 }
 
-function heatCell(d, i, j, filter) {
-  const len = Number(d.bin_lengths[j]) || 0;
-  const pre = Number(d.pre[i][j]) || 0;
-  let out = 0;
-  let sens = 0;
-  if (filter === HEAT_ALL || filter === HEAT_OUTAGE_KEY) out = Number(d.outage[i][j]) || 0;
-  if (filter === HEAT_ALL) {
-    for (const k of heatSensors(d)) sens = Math.max(sens, Number(d.sensors[k][i][j]) || 0);
-  } else if (filter !== HEAT_OUTAGE_KEY && d.sensors[filter]) {
-    sens = Number(d.sensors[filter][i][j]) || 0;
-  }
-  if (out > 0) return HEAT_Z_OUTAGE + heatLevel(out, len);
-  if (sens > 0) return HEAT_Z_SENSOR + heatLevel(sens, len);
-  if (pre * 2 >= len && len > 0) return HEAT_Z_PRE;
-  return 0;
+function tlWindow(d) {
+  const start = tlParse(d.window_start);
+  const end = tlParse(d.window_end);
+  return { start: start, end: end, hours: Math.max(1, (end - start) / TL_HOUR_MS) };
 }
 
-function heatRowVisible(d, i, filter) {
-  if (filter === HEAT_ALL) {
-    if (heatSum(d.outage[i]) > 0) return true;
-    if (heatSensors(d).some((k) => heatSum(d.sensors[k][i]) > 0)) return true;
-    return heatSum(d.pre[i]) >= heatSum(d.bin_lengths) && heatSum(d.bin_lengths) > 0;
+function tlCategories(d) {
+  const win = tlWindow(d);
+  const pre = [];
+  (d.first_report || []).forEach((off, i) => {
+    const hours = off === null || off === undefined ? win.hours : Number(off);
+    if (hours > 0) pre.push([i, 0, Math.min(hours, win.hours)]);
+  });
+  const colors = d.colors || {};
+  const cats = [{ key: TL_OUTAGE, color: colors[TL_OUTAGE] || "#ef4444", spans: d.outage || [] }];
+  for (const k of d.sensor_order || []) {
+    cats.push({ key: k, color: colors[k] || "#94a3b8", spans: (d.sensors || {})[k] || [] });
   }
-  if (filter === HEAT_OUTAGE_KEY) return heatSum(d.outage[i]) > 0;
-  return !!d.sensors[filter] && heatSum(d.sensors[filter][i]) > 0;
+  cats.push({ key: TL_PRE, color: colors[TL_PRE] || "#d6d3ce", spans: pre, pre: true });
+  return cats;
 }
 
-function heatHover(d, i, j, only) {
-  const len = Number(d.bin_lengths[j]) || 0;
-  const pre = Number(d.pre[i][j]) || 0;
-  const parts = [];
-  const out = Number(d.outage[i][j]) || 0;
-  if (out > 0 && (!only || only === HEAT_OUTAGE_KEY)) parts.push(`Outage ${out}h`);
-  for (const k of heatSensors(d)) {
-    if (only && only !== k) continue;
-    const h = Number(d.sensors[k][i][j]) || 0;
-    if (h > 0) parts.push(`${k} ${h}h`);
-  }
-  let body;
-  if (parts.length) body = "Missing: " + parts.join(", ");
-  else if (pre * 2 >= len && len > 0) body = "Before first report";
-  else body = "Complete";
-  const head = only ? `${d.stations[i]} \u00b7 ${only}` : d.stations[i];
-  return `<b>${head}</b><br>${heatBinLabel(d, j)}<br>${body}`;
+function tlHover(d, cat, span) {
+  const win = tlWindow(d);
+  const start = win.start + Number(span[1]) * TL_HOUR_MS;
+  const end = start + Number(span[2]) * TL_HOUR_MS;
+  const name = `<b>${d.stations[span[0]]}</b>`;
+  const range = tlRange(start, end);
+  if (cat.pre) return `${name}<br>${TL_PRE}<br>${range}`;
+  const what = cat.key === TL_OUTAGE ? TL_OUTAGE : `${cat.key} missing`;
+  return `${name}<br>${what}<br>${range}<br>Duration: ${span[2]}h`;
 }
 
-function heatPlot(d, labels, z, text, rowPx, emptyText) {
+function tlFigure(d, hidden, idx) {
+  const win = tlWindow(d);
+  const cats = tlCategories(d);
+  const station = idx === null || idx === undefined ? null : idx;
+  const shown = (cat) => !hidden.has(cat.key);
+
+  let labels;
+  let rowOf;
+  if (station === null) {
+    const used = new Set();
+    for (const cat of cats) {
+      if (!shown(cat)) continue;
+      for (const sp of cat.spans) used.add(sp[0]);
+    }
+    const rows = (d.stations || []).map((_s, i) => i).filter((i) => used.has(i));
+    const pos = new Map(rows.map((i, r) => [i, r]));
+    labels = rows.map((i) => d.stations[i]);
+    rowOf = (cat, sp) => pos.get(sp[0]);
+  } else {
+    const keys = cats
+      .filter((cat) => !cat.pre && shown(cat) && cat.spans.some((sp) => sp[0] === station))
+      .map((cat) => cat.key);
+    const pos = new Map(keys.map((k, r) => [k, r]));
+    labels = keys;
+    rowOf = (cat, sp) => (cat.pre ? null : pos.get(cat.key));
+  }
+
   const n = labels.length;
+  const data = [];
+  const textX = [];
+  const textY = [];
+  const textT = [];
+
+  for (const cat of cats) {
+    const own = station === null ? cat.spans : cat.spans.filter((sp) => sp[0] === station);
+    if (!own.length) continue;
+    const trace = {
+      type: "bar",
+      orientation: "h",
+      name: cat.key,
+      legendgroup: cat.key,
+      width: 0.7,
+      opacity: 0.75,
+      marker: { color: cat.color, line: { color: "rgba(0,0,0,0.25)", width: 1 } },
+      hoverinfo: "text",
+      x: [],
+      y: [],
+      base: [],
+      hovertext: [],
+    };
+    if (!shown(cat)) {
+      trace.visible = "legendonly";
+      trace.x = [1];
+      trace.y = [0];
+      trace.base = [tlIso(win.start)];
+      data.push(trace);
+      continue;
+    }
+    const rows = cat.pre && station !== null ? labels.map((_l, r) => r) : null;
+    for (const sp of own) {
+      const targets = rows || [rowOf(cat, sp)];
+      const start = win.start + Number(sp[1]) * TL_HOUR_MS;
+      const shownHours = Math.max(Number(sp[2]), win.hours * TL_MIN_FRACTION);
+      for (const r of targets) {
+        if (r === undefined || r === null) continue;
+        trace.x.push(shownHours * TL_HOUR_MS);
+        trace.y.push(r);
+        trace.base.push(tlIso(start));
+        trace.hovertext.push(tlHover(d, cat, sp));
+        if (!cat.pre && Number(sp[2]) >= win.hours * TL_LABEL_FRACTION) {
+          textX.push(tlIso(start + (Number(sp[2]) * TL_HOUR_MS) / 2));
+          textY.push(r);
+          textT.push(`${sp[2]}h`);
+        }
+      }
+    }
+    if (trace.x.length) data.push(trace);
+  }
+
+  if (textX.length) {
+    data.push({
+      type: "scatter",
+      mode: "text",
+      x: textX,
+      y: textY,
+      text: textT,
+      textfont: { size: 9, color: "white" },
+      hoverinfo: "skip",
+      showlegend: false,
+    });
+  }
+
   const style = d.style || {};
   const layout = {
     title: {
@@ -4583,32 +4588,24 @@ function heatPlot(d, labels, z, text, rowPx, emptyText) {
       xref: "paper",
       font: { size: style.title_size || 13, color: style.title_color || "#475569" },
     },
-    font: style.font_family ? { family: style.font_family } : undefined,
-    margin: Object.assign({}, HEAT_MARGIN),
-    height: Math.max(HEAT_MIN_HEIGHT, n * rowPx + HEAT_MARGIN.t + HEAT_MARGIN.b),
-    xaxis: {
-      type: "date",
-      side: "top",
-      range: [d.window_start, d.window_end],
-      showgrid: false,
-      zeroline: false,
-      tickfont: { size: 11 },
-    },
+    xaxis: { type: "date", title: "Time", range: [tlIso(win.start), tlIso(win.end)] },
     yaxis: {
-      tickvals: labels.map((_v, i) => i),
+      tickvals: labels.map((_l, i) => i),
       ticktext: labels,
       range: [Math.max(n, 1) - 0.5, -0.5],
       autorange: false,
-      showgrid: false,
-      zeroline: false,
-      tickfont: { size: 11 },
     },
-    plot_bgcolor: "rgba(0,0,0,0)",
-    showlegend: false,
+    height: Math.max(TL_MIN_HEIGHT, n * TL_ROW_PX + 100),
+    margin: Object.assign({}, TL_MARGIN),
+    legend: { x: 1.02, y: 1.0, xanchor: "left", yanchor: "top", font: { size: 10 } },
+    bargap: 0,
+    barmode: "overlay",
+    showlegend: true,
   };
+  if (style.font_family) layout.font = { family: style.font_family };
   if (!n) {
     layout.annotations = [{
-      text: emptyText,
+      text: "No missing data",
       showarrow: false,
       xref: "paper",
       yref: "paper",
@@ -4616,86 +4613,85 @@ function heatPlot(d, labels, z, text, rowPx, emptyText) {
       y: 0.5,
       font: { size: 12, color: "#8a857d" },
     }];
-    return { data: [], layout: layout };
   }
-  const trace = {
-    type: "heatmap",
-    x: d.bin_starts.map((_v, j) => heatMid(d, j)),
-    y: labels.map((_v, i) => i),
-    z: z,
-    text: text,
-    hovertemplate: "%{text}<extra></extra>",
-    colorscale: HEAT_SCALE,
-    zmin: -0.5,
-    zmax: HEAT_SCALE.length / 2 - 0.5,
-    showscale: false,
-    xgap: 1,
-    ygap: 1,
-  };
-  return { data: [trace], layout: layout };
+  return { data: data, layout: layout };
 }
 
-function heatFigure(d, filter) {
-  const rows = [];
-  (d.stations || []).forEach((_s, i) => {
-    if (heatRowVisible(d, i, filter)) rows.push(i);
-  });
-  const cols = d.bin_starts.map((_v, j) => j);
-  const z = rows.map((i) => cols.map((j) => heatCell(d, i, j, filter)));
-  const text = rows.map((i) => cols.map((j) => heatHover(d, i, j, null)));
-  const empty = filter === HEAT_ALL
-    ? "No missing data in this window"
-    : `No stations missing ${filter} data`;
-  return heatPlot(d, rows.map((i) => d.stations[i]), z, text, HEAT_ROW_PX, empty);
-}
+function tlView(g, d, idx, cap) {
+  const view = { hidden: new Set(), idx: idx === undefined ? null : idx };
+  let want = null;
+  let timer = null;
 
-function heatStationFigure(d, idx) {
-  const cats = [];
-  if (heatSum(d.outage[idx]) > 0) cats.push([HEAT_OUTAGE_KEY, d.outage[idx], HEAT_Z_OUTAGE]);
-  for (const k of heatSensors(d)) {
-    if (heatSum(d.sensors[k][idx]) > 0) cats.push([k, d.sensors[k][idx], HEAT_Z_SENSOR]);
-  }
-  const cols = d.bin_starts.map((_v, j) => j);
-  const z = cats.map(([, row, base]) => cols.map((j) => {
-    const len = Number(d.bin_lengths[j]) || 0;
-    const h = Number(row[j]) || 0;
-    if (h > 0) return base + heatLevel(h, len);
-    const pre = Number(d.pre[idx][j]) || 0;
-    return pre * 2 >= len && len > 0 ? HEAT_Z_PRE : 0;
-  }));
-  const text = cats.map(([key]) => cols.map((j) => heatHover(d, idx, j, key)));
-  return heatPlot(
-    d,
-    cats.map(([key]) => key),
-    z,
-    text,
-    HEAT_BREAKDOWN_ROW_PX,
-    `No missing data for ${d.stations[idx]} in this window`
-  );
-}
-
-function heatLegend() {
-  const legend = el("div", "wx-heat-legend");
-  const key = (colors, label) => {
-    const k = el("span", "wx-heat-key");
-    for (const c of colors) {
-      const sw = el("span", "wx-heat-sw");
-      sw.style.background = c;
-      if (c === HEAT_COMPLETE) sw.style.border = "1px solid #e8e6e3";
-      k.appendChild(sw);
+  const draw = () => {
+    let next = tlFigure(d, view.hidden, view.idx);
+    if (typeof cap === "function") {
+      const limit = cap();
+      if (limit && next.layout.height > limit) next.layout.height = limit;
     }
-    k.appendChild(ovText("span", null, label));
-    legend.appendChild(k);
+    want = next;
+    g._wxOnDrawn(() => {
+      if (want === next) renderPlot(g, next);
+    });
   };
-  key([HEAT_OUTAGE[0], HEAT_OUTAGE[HEAT_LEVELS - 1]], "Outage");
-  key([HEAT_SENSOR[0], HEAT_SENSOR[HEAT_LEVELS - 1]], "Sensor gaps");
-  key([HEAT_COMPLETE], "Complete");
-  key([HEAT_PRE], "Before first report");
-  legend.appendChild(ovText("span", null, "Darker means more hours missing"));
-  return legend;
+
+  const keys = () => {
+    const out = [];
+    for (const tr of (tlFigure(d, new Set(), view.idx).data || [])) {
+      if (tr.type === "bar" && out.indexOf(tr.name) < 0) out.push(tr.name);
+    }
+    return out;
+  };
+
+  const toggle = (key) => {
+    if (view.hidden.has(key)) view.hidden.delete(key);
+    else view.hidden.add(key);
+    draw();
+  };
+
+  const isolate = (key) => {
+    const all = keys();
+    const solo = all.every((k) => (k === key) !== view.hidden.has(k));
+    view.hidden = new Set(solo ? [] : all.filter((k) => k !== key));
+    draw();
+  };
+
+  g._wxOnDrawn(() => {
+    const pd = g._wxPlotDiv;
+    if (!pd || pd._wxTimelineLegend || typeof pd.on !== "function") return;
+    pd._wxTimelineLegend = true;
+    const keyOf = (ev) => {
+      const list = ev && (ev.data || ev.fullData);
+      const tr = list && list[ev.curveNumber];
+      return tr ? String(tr.legendgroup || tr.name || "") : "";
+    };
+    pd.on("plotly_legendclick", (ev) => {
+      const key = keyOf(ev);
+      if (timer) clearTimeout(timer);
+      const delay = (pd._context && pd._context.doubleClickDelay) || TL_CLICK_DELAY;
+      timer = setTimeout(() => {
+        timer = null;
+        if (key) toggle(key);
+      }, delay);
+      return false;
+    });
+    pd.on("plotly_legenddoubleclick", (ev) => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      const key = keyOf(ev);
+      if (key) isolate(key);
+      return false;
+    });
+  });
+
+  view.setStation = (next) => {
+    view.idx = next === undefined ? null : next;
+    draw();
+  };
+
+  return view;
 }
 
-function heatMessage(body, text) {
+function tlMessage(body, text) {
   body.innerHTML = "";
   body.appendChild(ovText("div", "wx-detail-msg", text));
 }
@@ -4725,7 +4721,7 @@ function renderPlot(g, next) {
   if (typeof g._wxFit === "function") g._wxFit();
 }
 
-function mountHeat(panel, body, f, row) {
+function mountTimeline(panel, body, f, row) {
   const owner = row || null;
   const station = f.station || null;
   const fc = state.fc;
@@ -4746,28 +4742,25 @@ function mountHeat(panel, body, f, row) {
   loadCharts(fc, hours, DATA_SUFFIX)
     .then((c) => {
       if (!live()) return;
-      const d = c && c.data_heatmap;
+      const d = c && c.data_timeline;
       if (!d || !Array.isArray(d.stations)) {
-        heatMessage(body, (d && d.message) || "Missing-data chart unavailable for this window.");
+        tlMessage(body, (d && d.message) || "Missing-data chart unavailable for this window.");
         return;
       }
-      const idx = heatStationIndex(d, station);
+      const idx = tlStationIndex(d, station);
       if (idx < 0) {
-        heatMessage(body, `No missing-data rows for ${station} in this window.`);
+        tlMessage(body, `No missing-data rows for ${station} in this window.`);
         return;
       }
-      ensureHeatStyles();
-      const fig = heatStationFigure(d, idx);
       const shell = panel.parentNode;
       const inShell = !!(shell && shell.classList.contains("wx-ov-shell"));
-      const height = inShell
-        ? Math.min(fig.layout.height, overviewPlotCap(panel))
-        : fig.layout.height;
+      const cap = inShell ? () => overviewPlotCap(panel) : null;
+      const fig = tlFigure(d, new Set(), idx);
+      if (cap) fig.layout.height = Math.min(fig.layout.height, cap());
       body.innerHTML = "";
-      const bar = el("div", "wx-heat-bar");
-      bar.appendChild(heatLegend());
-      body.appendChild(bar);
-      body.appendChild(graph(fig, { height: height }));
+      const g = graph(fig, { height: fig.layout.height });
+      body.appendChild(g);
+      tlView(g, d, idx, cap);
       requestAnimationFrame(() => {
         if (!live()) return;
         if (row) revealRow(row);
@@ -4777,7 +4770,7 @@ function mountHeat(panel, body, f, row) {
     .catch((e) => {
       console.warn("missing-data panel failed", e);
       if (!body.isConnected) return;
-      heatMessage(body, "Could not load the missing-data chart.");
+      tlMessage(body, "Could not load the missing-data chart.");
     });
 }
 
@@ -5132,16 +5125,13 @@ async function buildPower(fc, hours) {
   return box;
 }
 
-function dataHeatmap(d) {
+function dataTimeline(d) {
   ensureDetailStyles();
-  ensureHeatStyles();
-  let filter = HEAT_ALL;
   let picked = null;
-  let pickedIdx = -1;
-  let want = null;
 
-  const g = graph(heatFigure(d, filter));
+  const g = graph(tlFigure(d, new Set(), null));
   const node = card(g, null, { expandable: false });
+  const view = tlView(g, d, null, null);
 
   const head = el("div", "wx-detail-head");
   const title = el("span", "t");
@@ -5150,46 +5140,14 @@ function dataHeatmap(d) {
   head.appendChild(title);
   head.appendChild(close);
   head.style.display = "none";
-
-  const bar = el("div", "wx-heat-bar");
-  const chips = el("div", "wx-heat-chips");
-  const keys = [HEAT_ALL];
-  if ((d.outage || []).some((r) => heatSum(r) > 0)) keys.push(HEAT_OUTAGE_KEY);
-  for (const k of heatSensors(d)) keys.push(k);
-  const buttons = keys.map((key) => {
-    const b = el("button", "wx-heat-chip");
-    b.type = "button";
-    b.textContent = key;
-    b.addEventListener("click", () => {
-      filter = key;
-      sync();
-    });
-    chips.appendChild(b);
-    return b;
-  });
-  bar.appendChild(chips);
-  bar.appendChild(heatLegend());
-
   node.insertBefore(head, g);
-  node.insertBefore(bar, g);
-
-  const sync = () => {
-    buttons.forEach((b, i) => b.classList.toggle("on", keys[i] === filter));
-    chips.style.display = pickedIdx >= 0 ? "none" : "";
-    const next = pickedIdx >= 0 ? heatStationFigure(d, pickedIdx) : heatFigure(d, filter);
-    want = next;
-    g._wxOnDrawn(() => {
-      if (want === next) renderPlot(g, next);
-    });
-  };
 
   const clear = () => {
     if (picked) picked.classList.remove("sel");
     picked = null;
-    pickedIdx = -1;
     head.style.display = "none";
     title.textContent = "";
-    sync();
+    view.setStation(null);
   };
 
   close.addEventListener("click", clear);
@@ -5199,33 +5157,30 @@ function dataHeatmap(d) {
       clear();
       return;
     }
-    const idx = heatStationIndex(d, f.station);
+    const idx = tlStationIndex(d, f.station);
     if (idx < 0) return;
     if (picked) picked.classList.remove("sel");
     picked = row;
-    pickedIdx = idx;
     row.classList.add("sel");
     title.textContent = d.stations[idx];
     head.style.display = "";
-    sync();
+    view.setStation(idx);
     requestAnimationFrame(() => {
       if (picked === row) showPanel(node);
     });
   };
 
-  buttons.forEach((b, i) => b.classList.toggle("on", keys[i] === filter));
   return { node: node, pick: pick };
 }
 
 async function buildData(fc, hours) {
   const c = await loadCharts(fc, hours, DATA_SUFFIX);
-  const d = c && c.data_heatmap;
+  const d = c && c.data_timeline;
   const box = el("div");
-  const view = d && Array.isArray(d.stations) ? dataHeatmap(d) : null;
+  const view = d && Array.isArray(d.stations) ? dataTimeline(d) : null;
   const pick = view ? view.pick : () => {};
   box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, null, pick));
   if (view) box.appendChild(view.node);
-  else if (d && d.message) box.appendChild(card(ovText("div", "unavailable", d.message), null, { expandable: false }));
   else box.appendChild(unavailable());
   return box;
 }
