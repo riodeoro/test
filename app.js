@@ -4360,7 +4360,7 @@ function openOverviewChart(panel, f, row) {
   }
 
   if (f.tab === DATA_TAB) {
-    mountTimeline(panel, body, f, row);
+    mountGantt(panel, body, f, row);
     return;
   }
 
@@ -4399,234 +4399,190 @@ function openOverviewChart(panel, f, row) {
     });
 }
 
-const TL_OUTAGE = "Outage";
+const GANTT_TAG_RE = /<[^>]*>/g;
 
-const TL_PRE = "Before first report";
+const GANTT_PCT_RE = /\s+\(\d+%\)$/;
 
-const TL_ROW_PX = 40;
+const GANTT_NC_SEP = " \u2715 ";
 
-const TL_MIN_HEIGHT = 300;
+const GANTT_SUB_PREFIX = "\u2514";
 
-const TL_MARGIN = { l: 120, r: 40, t: 60, b: 60 };
+const GANTT_ROW_PX = 40;
 
-const TL_MIN_FRACTION = 0.004;
+const GANTT_PANEL_PAD = 84;
 
-const TL_LABEL_FRACTION = 0.02;
+const GANTT_PANEL_MIN = 160;
 
-const TL_CLICK_DELAY = 300;
+const GANTT_CLICK_DELAY = 300;
 
-const TL_HOUR_MS = 3600000;
-
-const TL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function tlParse(stamp) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(stamp || ""));
-  if (!m) return null;
-  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
-}
-
-function tlIso(ms) {
-  const d = new Date(ms);
-  const p = (v) => String(v).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-}
-
-function tlDay(ms) {
-  const d = new Date(ms);
-  return `${TL_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-}
-
-function tlClock(ms) {
-  const d = new Date(ms);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-}
-
-function tlRange(start, end) {
-  if (tlDay(start) === tlDay(end)) {
-    return `${tlDay(start)} ${tlClock(start)}\u2013${tlClock(end)}`;
-  }
-  return `${tlDay(start)} ${tlClock(start)} \u2013 ${tlDay(end)} ${tlClock(end)}`;
-}
-
-function tlStationIndex(d, station) {
-  const want = neighbourKey(station);
-  if (!want) return -1;
-  return (d.stations || []).findIndex((s) => neighbourKey(s) === want);
-}
-
-function tlWindow(d) {
-  const start = tlParse(d.window_start);
-  const end = tlParse(d.window_end);
-  return { start: start, end: end, hours: Math.max(1, (end - start) / TL_HOUR_MS) };
-}
-
-function tlCategories(d) {
-  const win = tlWindow(d);
-  const pre = [];
-  (d.first_report || []).forEach((off, i) => {
-    const hours = off === null || off === undefined ? win.hours : Number(off);
-    if (hours > 0) pre.push([i, 0, Math.min(hours, win.hours)]);
-  });
-  const colors = d.colors || {};
-  const cats = [{ key: TL_OUTAGE, color: colors[TL_OUTAGE] || "#ef4444", spans: d.outage || [] }];
-  for (const k of d.sensor_order || []) {
-    cats.push({ key: k, color: colors[k] || "#94a3b8", spans: (d.sensors || {})[k] || [] });
-  }
-  cats.push({ key: TL_PRE, color: colors[TL_PRE] || "#d6d3ce", spans: pre, pre: true });
-  return cats;
-}
-
-function tlHover(d, cat, span) {
-  const win = tlWindow(d);
-  const start = win.start + Number(span[1]) * TL_HOUR_MS;
-  const end = start + Number(span[2]) * TL_HOUR_MS;
-  const name = `<b>${d.stations[span[0]]}</b>`;
-  const range = tlRange(start, end);
-  if (cat.pre) return `${name}<br>${TL_PRE}<br>${range}`;
-  const what = cat.key === TL_OUTAGE ? TL_OUTAGE : `${cat.key} missing`;
-  return `${name}<br>${what}<br>${range}<br>Duration: ${span[2]}h`;
-}
-
-function tlFigure(d, hidden, idx) {
-  const win = tlWindow(d);
-  const cats = tlCategories(d);
-  const station = idx === null || idx === undefined ? null : idx;
-  const shown = (cat) => !hidden.has(cat.key);
-
-  let labels;
-  let rowOf;
-  if (station === null) {
-    const used = new Set();
-    for (const cat of cats) {
-      if (!shown(cat)) continue;
-      for (const sp of cat.spans) used.add(sp[0]);
-    }
-    const rows = (d.stations || []).map((_s, i) => i).filter((i) => used.has(i));
-    const pos = new Map(rows.map((i, r) => [i, r]));
-    labels = rows.map((i) => d.stations[i]);
-    rowOf = (cat, sp) => pos.get(sp[0]);
-  } else {
-    const keys = cats
-      .filter((cat) => !cat.pre && shown(cat) && cat.spans.some((sp) => sp[0] === station))
-      .map((cat) => cat.key);
-    const pos = new Map(keys.map((k, r) => [k, r]));
-    labels = keys;
-    rowOf = (cat, sp) => (cat.pre ? null : pos.get(cat.key));
-  }
-
-  const n = labels.length;
-  const data = [];
-  const textX = [];
-  const textY = [];
-  const textT = [];
-
-  for (const cat of cats) {
-    const own = station === null ? cat.spans : cat.spans.filter((sp) => sp[0] === station);
-    if (!own.length) continue;
-    const trace = {
-      type: "bar",
-      orientation: "h",
-      name: cat.key,
-      legendgroup: cat.key,
-      width: 0.7,
-      opacity: 0.75,
-      marker: { color: cat.color, line: { color: "rgba(0,0,0,0.25)", width: 1 } },
-      hoverinfo: "text",
-      x: [],
-      y: [],
-      base: [],
-      hovertext: [],
-    };
-    if (!shown(cat)) {
-      trace.visible = "legendonly";
-      trace.x = [1];
-      trace.y = [0];
-      trace.base = [tlIso(win.start)];
-      data.push(trace);
+function ganttRowOwners(labels) {
+  const owners = [];
+  let current = null;
+  for (const raw of labels) {
+    const text = String(raw == null ? "" : raw).replace(GANTT_TAG_RE, "").trim();
+    if (text.indexOf(GANTT_SUB_PREFIX) === 0) {
+      owners.push(current);
       continue;
     }
-    const rows = cat.pre && station !== null ? labels.map((_l, r) => r) : null;
-    for (const sp of own) {
-      const targets = rows || [rowOf(cat, sp)];
-      const start = win.start + Number(sp[1]) * TL_HOUR_MS;
-      const shownHours = Math.max(Number(sp[2]), win.hours * TL_MIN_FRACTION);
-      for (const r of targets) {
-        if (r === undefined || r === null) continue;
-        trace.x.push(shownHours * TL_HOUR_MS);
-        trace.y.push(r);
-        trace.base.push(tlIso(start));
-        trace.hovertext.push(tlHover(d, cat, sp));
-        if (!cat.pre && Number(sp[2]) >= win.hours * TL_LABEL_FRACTION) {
-          textX.push(tlIso(start + (Number(sp[2]) * TL_HOUR_MS) / 2));
-          textY.push(r);
-          textT.push(`${sp[2]}h`);
-        }
-      }
+    const nc = text.indexOf(GANTT_NC_SEP);
+    if (nc > 0) {
+      current = null;
+      owners.push(text.slice(0, nc).trim());
+      continue;
     }
-    if (trace.x.length) data.push(trace);
+    current = text.replace(GANTT_PCT_RE, "").trim() || null;
+    owners.push(current);
   }
+  return owners;
+}
 
-  if (textX.length) {
-    data.push({
-      type: "scatter",
-      mode: "text",
-      x: textX,
-      y: textY,
-      text: textT,
-      textfont: { size: 9, color: "white" },
-      hoverinfo: "skip",
-      showlegend: false,
-    });
+function ganttTrace(tr, keep) {
+  const ys = tr ? decodeArray(tr.y) : null;
+  if (!ys) return null;
+  const n = ys.length;
+  const picks = [];
+  for (let i = 0; i < n; i++) {
+    const at = keep.get(Math.round(Number(ys[i])));
+    if (at !== undefined) picks.push([i, at]);
   }
+  if (!picks.length) return null;
+  const out = Object.assign({}, tr);
+  out.y = picks.map((p) => p[1]);
+  for (const key of ["x", "base", "text", "hovertext", "customdata"]) {
+    const arr = decodeArray(tr[key]);
+    if (!arr) continue;
+    if (arr.length !== n) return null;
+    out[key] = picks.map((p) => arr[p[0]]);
+  }
+  return out;
+}
 
-  const style = d.style || {};
-  const layout = {
-    title: {
-      text: `<b>${d.title || "Missing Data"}</b>`,
-      x: 0,
-      xanchor: "left",
-      xref: "paper",
-      font: { size: style.title_size || 13, color: style.title_color || "#475569" },
-    },
-    xaxis: { type: "date", title: "Time", range: [tlIso(win.start), tlIso(win.end)] },
-    yaxis: {
-      tickvals: labels.map((_l, i) => i),
-      ticktext: labels,
-      range: [Math.max(n, 1) - 0.5, -0.5],
-      autorange: false,
-    },
-    height: Math.max(TL_MIN_HEIGHT, n * TL_ROW_PX + 100),
-    margin: Object.assign({}, TL_MARGIN),
-    legend: { x: 1.02, y: 1.0, xanchor: "left", yanchor: "top", font: { size: 10 } },
-    bargap: 0,
-    barmode: "overlay",
-    showlegend: true,
-  };
-  if (style.font_family) layout.font = { family: style.font_family };
-  if (!n) {
-    layout.annotations = [{
-      text: "No missing data",
-      showarrow: false,
-      xref: "paper",
-      yref: "paper",
-      x: 0.5,
-      y: 0.5,
-      font: { size: 12, color: "#8a857d" },
-    }];
+function ganttRows(layout) {
+  const ya = layout && layout.yaxis;
+  const labels = ya ? decodeArray(ya.ticktext) : null;
+  const vals = ya ? decodeArray(ya.tickvals) : null;
+  if (!labels || !vals || labels.length !== vals.length) return null;
+  return { labels: labels, vals: vals };
+}
+
+function ganttRebuild(fig, kept, keepAll, keepData, hidden) {
+  const data = [];
+  for (const tr of fig.data || []) {
+    if (tr && tr.type === "bar") {
+      if (hidden && hidden.has(ganttTraceKey(tr))) {
+        data.push(Object.assign({}, tr, { visible: "legendonly" }));
+        continue;
+      }
+      const out = ganttTrace(tr, keepAll);
+      if (out) data.push(Object.assign(out, { visible: true }));
+      continue;
+    }
+    const out = ganttTrace(tr, keepData);
+    if (out) data.push(out);
   }
+  const layout = cloneLayout(fig.layout || {});
+  const n = kept.length;
+  const margin = layout.margin || {};
+  layout.yaxis = Object.assign({}, layout.yaxis, {
+    tickvals: kept.map((_v, i) => i),
+    ticktext: kept,
+    range: [Math.max(n, 1) - 0.5, -0.5],
+    autorange: false,
+    automargin: true,
+  });
+  layout.height = Math.max(
+    GANTT_PANEL_MIN,
+    n * GANTT_ROW_PX + (Number(margin.t) || 0) + (Number(margin.b) || 0)
+  );
   return { data: data, layout: layout };
 }
 
-function tlView(g, d, idx, cap) {
-  const view = { hidden: new Set(), idx: idx === undefined ? null : idx };
+function ganttForStation(fig, station) {
+  const rows = fig && Array.isArray(fig.data) ? ganttRows(fig.layout) : null;
+  if (!rows) return null;
+  const want = neighbourKey(station);
+  const owners = ganttRowOwners(rows.labels);
+  const kept = [];
+  const keep = new Map();
+  owners.forEach((owner, i) => {
+    if (!owner || neighbourKey(owner) !== want) return;
+    keep.set(Math.round(Number(rows.vals[i])), kept.length);
+    kept.push(rows.labels[i]);
+  });
+  if (!kept.length) return null;
+  const out = ganttRebuild(fig, kept, keep, keep, null);
+  if (!out.data.some((tr) => tr.type === "bar")) return null;
+  delete out.layout.title;
+  out.layout.annotations = [];
+  out.layout.margin = Object.assign({}, out.layout.margin, { t: 24 });
+  out.layout.height = Math.max(GANTT_PANEL_MIN, kept.length * GANTT_ROW_PX + GANTT_PANEL_PAD);
+  return out;
+}
+
+function ganttTraceKey(tr) {
+  return String((tr && (tr.legendgroup || tr.name)) || "");
+}
+
+function ganttCompact(base, hidden) {
+  if (!base || !hidden.size || !Array.isArray(base.data)) return base;
+  const rows = ganttRows(base.layout);
+  if (!rows) return base;
+
+  const rowAt = new Map();
+  rows.vals.forEach((v, i) => rowAt.set(Math.round(Number(v)), i));
+  const owners = ganttRowOwners(rows.labels);
+
+  const dataRows = new Set();
+  for (const tr of base.data) {
+    if (!tr || tr.type !== "bar" || hidden.has(ganttTraceKey(tr))) continue;
+    for (const y of decodeArray(tr.y) || []) {
+      const i = rowAt.get(Math.round(Number(y)));
+      if (i !== undefined) dataRows.add(i);
+    }
+  }
+
+  const live = new Set();
+  dataRows.forEach((i) => {
+    if (owners[i]) live.add(neighbourKey(owners[i]));
+  });
+
+  const kept = [];
+  const keepAll = new Map();
+  const keepData = new Map();
+  rows.labels.forEach((label, i) => {
+    const text = String(label == null ? "" : label).replace(GANTT_TAG_RE, "").trim();
+    const header = text.indexOf(GANTT_SUB_PREFIX) !== 0 && text.indexOf(GANTT_NC_SEP) < 0;
+    const hasData = dataRows.has(i);
+    if (!hasData && !(header && !!owners[i] && live.has(neighbourKey(owners[i])))) return;
+    const y = Math.round(Number(rows.vals[i]));
+    keepAll.set(y, kept.length);
+    if (hasData) keepData.set(y, kept.length);
+    kept.push(label);
+  });
+
+  return ganttRebuild(base, kept, keepAll, keepData, hidden);
+}
+
+function wholeGantt(fig) {
+  const layout = Object.assign({}, fig.layout || {});
+  delete layout.width;
+  layout.autosize = true;
+  layout.height = layout.height || 420;
+  return { data: fig.data || [], layout: layout };
+}
+
+function ganttView(g, base, cap) {
+  const view = { base: base, hidden: new Set() };
   let want = null;
   let timer = null;
 
   const draw = () => {
-    let next = tlFigure(d, view.hidden, view.idx);
+    let next = ganttCompact(view.base, view.hidden);
     if (typeof cap === "function") {
       const limit = cap();
-      if (limit && next.layout.height > limit) next.layout.height = limit;
+      if (limit && next.layout.height > limit) {
+        next = { data: next.data, layout: Object.assign({}, next.layout, { height: limit }) };
+      }
     }
     want = next;
     g._wxOnDrawn(() => {
@@ -4636,8 +4592,10 @@ function tlView(g, d, idx, cap) {
 
   const keys = () => {
     const out = [];
-    for (const tr of (tlFigure(d, new Set(), view.idx).data || [])) {
-      if (tr.type === "bar" && out.indexOf(tr.name) < 0) out.push(tr.name);
+    for (const tr of view.base.data || []) {
+      if (!tr || tr.type !== "bar") continue;
+      const k = ganttTraceKey(tr);
+      if (k && out.indexOf(k) < 0) out.push(k);
     }
     return out;
   };
@@ -4657,17 +4615,16 @@ function tlView(g, d, idx, cap) {
 
   g._wxOnDrawn(() => {
     const pd = g._wxPlotDiv;
-    if (!pd || pd._wxTimelineLegend || typeof pd.on !== "function") return;
-    pd._wxTimelineLegend = true;
+    if (!pd || pd._wxGanttLegend || typeof pd.on !== "function") return;
+    pd._wxGanttLegend = true;
     const keyOf = (ev) => {
       const list = ev && (ev.data || ev.fullData);
-      const tr = list && list[ev.curveNumber];
-      return tr ? String(tr.legendgroup || tr.name || "") : "";
+      return list ? ganttTraceKey(list[ev.curveNumber]) : "";
     };
     pd.on("plotly_legendclick", (ev) => {
       const key = keyOf(ev);
       if (timer) clearTimeout(timer);
-      const delay = (pd._context && pd._context.doubleClickDelay) || TL_CLICK_DELAY;
+      const delay = (pd._context && pd._context.doubleClickDelay) || GANTT_CLICK_DELAY;
       timer = setTimeout(() => {
         timer = null;
         if (key) toggle(key);
@@ -4683,15 +4640,15 @@ function tlView(g, d, idx, cap) {
     });
   });
 
-  view.setStation = (next) => {
-    view.idx = next === undefined ? null : next;
+  view.setBase = (next) => {
+    view.base = next;
     draw();
   };
 
   return view;
 }
 
-function tlMessage(body, text) {
+function ganttMessage(body, text) {
   body.innerHTML = "";
   body.appendChild(ovText("div", "wx-detail-msg", text));
 }
@@ -4721,7 +4678,7 @@ function renderPlot(g, next) {
   if (typeof g._wxFit === "function") g._wxFit();
 }
 
-function mountTimeline(panel, body, f, row) {
+function mountGantt(panel, body, f, row) {
   const owner = row || null;
   const station = f.station || null;
   const fc = state.fc;
@@ -4742,25 +4699,23 @@ function mountTimeline(panel, body, f, row) {
   loadCharts(fc, hours, DATA_SUFFIX)
     .then((c) => {
       if (!live()) return;
-      const d = c && c.data_timeline;
-      if (!d || !Array.isArray(d.stations)) {
-        tlMessage(body, (d && d.message) || "Missing-data chart unavailable for this window.");
+      if (!c || !c.data_gantt) {
+        ganttMessage(body, "Missing-data chart unavailable for this window.");
         return;
       }
-      const idx = tlStationIndex(d, station);
-      if (idx < 0) {
-        tlMessage(body, `No missing-data rows for ${station} in this window.`);
+      const fig = ganttForStation(c.data_gantt, station);
+      if (!fig) {
+        ganttMessage(body, `No missing-data rows for ${station} in this window.`);
         return;
       }
       const shell = panel.parentNode;
       const inShell = !!(shell && shell.classList.contains("wx-ov-shell"));
       const cap = inShell ? () => overviewPlotCap(panel) : null;
-      const fig = tlFigure(d, new Set(), idx);
-      if (cap) fig.layout.height = Math.min(fig.layout.height, cap());
+      const height = cap ? Math.min(fig.layout.height, cap()) : fig.layout.height;
       body.innerHTML = "";
-      const g = graph(fig, { height: fig.layout.height });
+      const g = graph(fig, { height: height });
       body.appendChild(g);
-      tlView(g, d, idx, cap);
+      ganttView(g, fig, cap);
       requestAnimationFrame(() => {
         if (!live()) return;
         if (row) revealRow(row);
@@ -4768,9 +4723,9 @@ function mountTimeline(panel, body, f, row) {
       });
     })
     .catch((e) => {
-      console.warn("missing-data panel failed", e);
+      console.warn("gantt panel failed", e);
       if (!body.isConnected) return;
-      tlMessage(body, "Could not load the missing-data chart.");
+      ganttMessage(body, "Could not load the missing-data chart.");
     });
 }
 
@@ -5125,13 +5080,13 @@ async function buildPower(fc, hours) {
   return box;
 }
 
-function dataTimeline(d) {
+function dataGantt(fig) {
   ensureDetailStyles();
-  let picked = null;
-
-  const g = graph(tlFigure(d, new Set(), null));
+  const g = graph(fig);
   const node = card(g, null, { expandable: false });
-  const view = tlView(g, d, null, null);
+  const whole = wholeGantt(fig);
+  const view = ganttView(g, whole, null);
+  let picked = null;
 
   const head = el("div", "wx-detail-head");
   const title = el("span", "t");
@@ -5147,7 +5102,7 @@ function dataTimeline(d) {
     picked = null;
     head.style.display = "none";
     title.textContent = "";
-    view.setStation(null);
+    view.setBase(whole);
   };
 
   close.addEventListener("click", clear);
@@ -5157,14 +5112,14 @@ function dataTimeline(d) {
       clear();
       return;
     }
-    const idx = tlStationIndex(d, f.station);
-    if (idx < 0) return;
+    const next = ganttForStation(fig, f.station);
+    if (!next) return;
     if (picked) picked.classList.remove("sel");
     picked = row;
     row.classList.add("sel");
-    title.textContent = d.stations[idx];
+    title.textContent = f.station;
     head.style.display = "";
-    view.setStation(idx);
+    view.setBase(next);
     requestAnimationFrame(() => {
       if (picked === row) showPanel(node);
     });
@@ -5175,13 +5130,11 @@ function dataTimeline(d) {
 
 async function buildData(fc, hours) {
   const c = await loadCharts(fc, hours, DATA_SUFFIX);
-  const d = c && c.data_timeline;
   const box = el("div");
-  const view = d && Array.isArray(d.stations) ? dataTimeline(d) : null;
+  const view = c && c.data_gantt ? dataGantt(c.data_gantt) : null;
   const pick = view ? view.pick : () => {};
   box.appendChild(await insightBanner(fc, hours, DATA_SUFFIX, null, pick));
-  if (view) box.appendChild(view.node);
-  else box.appendChild(unavailable());
+  box.appendChild(view ? view.node : unavailable());
   return box;
 }
 
