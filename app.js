@@ -3649,6 +3649,16 @@ function isDataSection(section) {
   return section === DATA_SECTION;
 }
 
+function dataRowOrder(a, b) {
+  const aMissing = isDataSection(a.f.section) ? 0 : 1;
+  const bMissing = isDataSection(b.f.section) ? 0 : 1;
+  if (aMissing !== bMissing) return aMissing - bMissing;
+  const aAt = a.f.at === null || a.f.at === undefined ? -Infinity : a.f.at;
+  const bAt = b.f.at === null || b.f.at === undefined ? -Infinity : b.f.at;
+  if (aAt !== bAt) return bAt > aAt ? 1 : -1;
+  return ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i;
+}
+
 function missingHours(f) {
   let max = 0;
   for (const m of String(f.detail || "").matchAll(MISSING_HOURS_RE)) {
@@ -3672,6 +3682,8 @@ const STAMP_FUTURE_SLACK_MS = 30 * 24 * 3600 * 1000;
 
 const FINDING_LABEL_MAX = 44;
 
+const BRACKET_SAME_DAY_END_RE = /^\s*[\u2013-]\s*(\d{1,2}):(\d{2})(?!\d)/;
+
 function bracketStamp(when) {
   if (!when) return null;
   const now = Date.now();
@@ -3685,8 +3697,15 @@ function bracketStamp(when) {
     const day = Number(m[2]);
     const hh = m[3] ? Number(m[3]) : 0;
     const mm = m[4] ? Number(m[4]) : 0;
-    let ms = Date.UTC(year, mon, day, hh, mm);
-    if (ms > now + STAMP_FUTURE_SLACK_MS) ms = Date.UTC(year - 1, mon, day, hh, mm);
+    let endHh = hh;
+    let endMm = mm;
+    const tail = BRACKET_SAME_DAY_END_RE.exec(when.slice(BRACKET_STAMP_RE.lastIndex));
+    if (tail) {
+      endHh = Number(tail[1]);
+      endMm = Number(tail[2]);
+    }
+    let ms = Date.UTC(year, mon, day, endHh, endMm);
+    if (ms > now + STAMP_FUTURE_SLACK_MS) ms = Date.UTC(year - 1, mon, day, endHh, endMm);
     if (best === null || ms > best) best = ms;
   }
   return best;
@@ -3785,7 +3804,7 @@ async function collectFindings(fc, hours) {
   });
   applySeverity(dataRows)
     .map((f, i) => ({ f: f, i: i }))
-    .sort((a, b) => ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i)
+    .sort(dataRowOrder)
     .slice(0, OVERVIEW_DATA_LIMIT)
     .forEach((e) => out.push(e.f));
   return applySeverity(out);
@@ -4817,9 +4836,7 @@ function sortRows(entries, column, dir) {
         rank.area.get(bArea) - rank.area.get(aArea) || aArea.localeCompare(bArea)
       );
     }
-    if (aArea === DATA_AREA && column !== "Type") {
-      return ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i;
-    }
+    if (aArea === DATA_AREA && column !== "Type") return dataRowOrder(a, b);
     const aSec = String(a.f.section || "");
     const bSec = String(b.f.section || "");
     if (aSec !== bSec) {
