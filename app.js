@@ -3859,9 +3859,9 @@ const SEV_RE = {
   share: /up to\s+(\d+(?:\.\d+)?)\s*%/i,
   rainMm: /Rn_1\s*\((-?\d+(?:\.\d+)?)\s*mm\)/i,
   forHours: /for\s+(\d+(?:\.\d+)?)\s*h\b/i,
-  zeroWindHours: /zero wind\s+(\d+(?:\.\d+)?)\s*h\b/i,
+  calmLongest: /longest\s+(\d+(?:\.\d+)?)\s*h\b/i,
+  calmDays: /calm on\s+(\d+)\s+day/i,
   silentHours: /silent\s+(\d+(?:\.\d+)?)\s*h\s+straight/i,
-  dirShifts: /(\d+)\s+shifts/i,
   neighbourZero: /(\d+)\s+of\s+(\d+)\s+neighbour/i,
   silentZero: /silent\s+(\d+)\s+of\s+(\d+)\s+neighbour/i,
   vbatMin: /min\s+(-?\d+(?:\.\d+)?)\s*V/i,
@@ -3899,9 +3899,9 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.hours },
     mag: { re: SEV_RE.rainMm },
   }],
-  ["Wind", "PERSISTENT STATES", 10, {
-    dur: { re: SEV_RE.zeroWindHours },
-    freq: { re: SEV_RE.dirShifts },
+  ["Wind", "DAYTIME CALM (WSPD <1 KM/H)", 10, {
+    dur: { re: SEV_RE.calmLongest },
+    freq: { re: SEV_RE.calmDays },
   }],
   ["RH", "RH CHANGED \u226520%/H, DECOUPLED FROM TEMPERATURE AND WIND", 11, {
     freq: { re: SEV_RE.shifts },
