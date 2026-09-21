@@ -4132,20 +4132,47 @@ function ensureOverviewStyles() {
     ".wx-ov-type{font-size:10px;letter-spacing:.03em;color:#a9a49c;}",
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
-    ".wx-ov-summary{flex:0 0 auto;background:var(--surface);overflow:hidden;",
-    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 8px;",
-    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
-    ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
-    "text-transform:uppercase;color:var(--text-muted);}",
+    ".wx-ov-summary{flex:0 0 auto;display:flex;flex-direction:column;max-height:42%;",
+    "min-height:0;background:var(--surface);border:1px solid var(--line);",
+    "border-radius:10px;padding:10px 12px 8px;box-shadow:0 1px 3px rgba(0,0,0,.04);",
+    "margin-bottom:10px;}",
     ".wx-ov-summary-head{display:flex;flex-wrap:wrap;align-items:center;",
     "justify-content:space-between;gap:4px 12px;margin-bottom:6px;}",
-    ".wx-ov-summary-legend{display:flex;flex-wrap:wrap;gap:4px 10px;}",
-    ".wx-ov-summary-key{display:inline-flex;align-items:center;gap:4px;",
+    ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
+    "text-transform:uppercase;color:var(--text-muted);}",
+    ".wx-ov-status-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;}",
+    ".wx-ov-status-key{display:inline-flex;align-items:center;gap:6px;",
     "font-size:10px;color:var(--text-muted);}",
-    ".wx-ov-summary-key .sw{width:9px;height:9px;border-radius:2px;display:inline-block;}",
-    ".wx-ov-summary .treemaplayer path{cursor:pointer;}",
+    ".wx-ov-status-key .ramp{width:72px;height:8px;border-radius:2px;display:inline-block;}",
+    ".wx-ov-status-key .ring{width:10px;height:10px;border-radius:2px;display:inline-block;",
+    "background:#fde047;box-shadow:inset 0 0 0 1.5px var(--text);}",
+    ".wx-ov-status-wrap{flex:1 1 auto;min-height:0;overflow:auto;}",
+    ".wx-ov-status{border-collapse:separate;border-spacing:2px 1px;width:100%;}",
+    ".wx-ov-status th{position:sticky;top:0;z-index:1;background:var(--surface);",
+    "padding:4px 6px;font-size:9px;font-weight:600;letter-spacing:.06em;",
+    "text-transform:uppercase;color:var(--text-muted);text-align:center;",
+    "white-space:nowrap;cursor:pointer;user-select:none;}",
+    ".wx-ov-status th.l{text-align:left;padding-left:0;}",
+    ".wx-ov-status th:hover{color:var(--text);}",
+    ".wx-ov-status th .a{margin-left:4px;color:var(--accent);}",
+    ".wx-ov-status-name{font-size:11px;font-weight:600;letter-spacing:-.01em;",
+    "color:var(--text);white-space:nowrap;padding:0 10px 0 0;width:1%;}",
+    ".wx-ov-cell{background:#f8fafc;height:20px;min-width:44px;text-align:center;",
+    "font-size:10px;font-weight:600;color:var(--text);border-radius:2px;",
+    "font-variant-numeric:tabular-nums;}",
+    ".wx-ov-cell.dark{color:#ffffff;}",
+    ".wx-ov-cell.hit{cursor:pointer;}",
+    ".wx-ov-cell.hit:hover{filter:brightness(.94);}",
+    ".wx-ov-cell.live{box-shadow:inset 0 0 0 1.5px var(--text);}",
+    ".wx-ov-status-total{font-size:10px;color:var(--text-muted);text-align:center;",
+    "min-width:36px;font-variant-numeric:tabular-nums;}",
+    ".wx-ov-tip{position:fixed;z-index:1000;display:none;pointer-events:none;",
+    "max-width:320px;background:#ffffff;border:1px solid #e8e6e3;border-radius:4px;",
+    "padding:6px 8px;font-size:11px;line-height:1.4;color:#26231f;",
+    "box-shadow:0 2px 8px rgba(0,0,0,.08);}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
-    ".wx-ov-summary{padding:8px 8px 2px;}",
+    ".wx-ov-summary{padding:8px 8px 6px;}",
+    ".wx-ov-cell{min-width:30px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
   document.head.appendChild(st);
@@ -4939,26 +4966,27 @@ function overviewTable(findings, panel, columns, onPick) {
   return wrap;
 }
 
-const SUMMARY_HEIGHT = 340;
+const STATUS_SCALE = [
+  [0.0, "#f8fafc"],
+  [0.25, "#fde047"],
+  [0.5, "#f97316"],
+  [0.75, "#dc2626"],
+  [1.0, "#450a0a"],
+];
 
-const SUMMARY_HEIGHT_MOBILE = 300;
+const STATUS_FLOOR = 0.25;
 
-const SUMMARY_ROOT_ID = "all";
+const STATUS_SEV_MIN = (SEVERITY_RANK_FLOOR - SEVERITY_DEFAULT_RANK + 1) * SEVERITY_CATEGORY_STEP;
 
-const SUMMARY_ROOT_COLOR = "#f5f5f4";
+const STATUS_SEV_MAX = (SEVERITY_RANK_FLOOR - 1) * SEVERITY_CATEGORY_STEP + SEVERITY_MAX_MODIFIER;
 
-const SUMMARY_STATION_COLOR = "#e7e5e4";
-
-const AREA_COLORS = {
-  Data: "#94a3b8",
-  RH: "#2f6f9e",
-  Wind: "#3f8f45",
-  Temp: "#ea580c",
-  Precip: "#0891b2",
-  Power: "#7c3aed",
-};
+const STATUS_AREAS = INSIGHT_SOURCES.map((s) => s[2]);
 
 const AREA_TAB = new Map(INSIGHT_SOURCES.map((s) => [s[2], s[1]]));
+
+const STATUS_TOTAL = "Total";
+
+const STATUS_STATION = "Station";
 
 function showSummary(panel, on) {
   const summary = panel && panel._wxSummary;
@@ -4966,204 +4994,239 @@ function showSummary(panel, on) {
   const visible = summary.style.display !== "none";
   if (visible === on) return;
   summary.style.display = on ? "" : "none";
-  if (!on) return;
-  requestAnimationFrame(() => {
-    const g = findGraphWrap(summary);
-    if (g && typeof g._wxResize === "function") g._wxResize();
-    sizeOverviewShell();
-  });
+  if (on) requestAnimationFrame(sizeOverviewShell);
 }
 
-function summaryStations(findings) {
+function hexRgb(hex) {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+function statusColor(t) {
+  const x = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < STATUS_SCALE.length; i++) {
+    const [p1, c1] = STATUS_SCALE[i];
+    if (x > p1 && i < STATUS_SCALE.length - 1) continue;
+    const [p0, c0] = STATUS_SCALE[i - 1];
+    const f = p1 > p0 ? (x - p0) / (p1 - p0) : 0;
+    const a = hexRgb(c0);
+    const b = hexRgb(c1);
+    const rgb = a.map((v, k) => Math.round(v + (b[k] - v) * Math.max(0, Math.min(1, f))));
+    return { css: "rgb(" + rgb.join(",") + ")", dark: 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 140 };
+  }
+  return { css: STATUS_SCALE[0][1], dark: false };
+}
+
+function statusLevel(sev) {
+  const t = (sev - STATUS_SEV_MIN) / (STATUS_SEV_MAX - STATUS_SEV_MIN);
+  return STATUS_FLOOR + (1 - STATUS_FLOOR) * Math.max(0, Math.min(1, t));
+}
+
+function statusRows(findings) {
   const byStation = new Map();
   for (const f of findings) {
     if (!f.station) continue;
-    let s = byStation.get(f.station);
-    if (!s) {
-      s = { station: f.station, total: 0, top: 0, areas: new Map() };
-      byStation.set(f.station, s);
+    let r = byStation.get(f.station);
+    if (!r) {
+      r = { station: f.station, total: 0, top: 0, ongoing: false, cells: new Map() };
+      byStation.set(f.station, r);
     }
     const area = String(f.area || "");
-    let a = s.areas.get(area);
-    if (!a) {
-      a = { count: 0, sections: new Map() };
-      s.areas.set(area, a);
+    let c = r.cells.get(area);
+    if (!c) {
+      c = { count: 0, top: 0, ongoing: false, sections: new Map() };
+      r.cells.set(area, c);
     }
-    a.count += 1;
+    const sev = ovSeverity(f);
+    c.count += 1;
+    c.top = Math.max(c.top, sev);
+    if (f.ongoing) c.ongoing = true;
     const sec = String(f.section || "Other");
-    a.sections.set(sec, (a.sections.get(sec) || 0) + 1);
-    s.total += 1;
-    s.top = Math.max(s.top, ovSeverity(f));
+    c.sections.set(sec, (c.sections.get(sec) || 0) + 1);
+    r.total += 1;
+    r.top = Math.max(r.top, sev);
+    if (f.ongoing) r.ongoing = true;
   }
-  return Array.from(byStation.values()).sort(
-    (a, b) => b.total - a.total || b.top - a.top || a.station.localeCompare(b.station)
-  );
+  return Array.from(byStation.values());
 }
 
-function alertWord(n) {
-  return n + (n === 1 ? " alert" : " alerts");
-}
-
-function summaryLeafHover(station, area, entry) {
-  const lines = Array.from(entry.sections.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([sec, n]) => "\u2022 " + sec + (n > 1 ? " (" + n + ")" : ""));
+function statusDefaultOrder(a, b) {
   return (
-    "<b>" + station + "</b><br>" + area + ": " + alertWord(entry.count) +
-    "<br>" + lines.join("<br>") + "<br><i>Click to open</i>"
+    b.top - a.top ||
+    b.total - a.total ||
+    a.station.localeCompare(b.station)
   );
 }
 
-function summaryStationHover(s) {
-  const lines = summaryAreas(s).map(
-    ([area, entry]) => "\u2022 " + area + ": " + entry.count
+function statusSorter(column) {
+  if (column === STATUS_STATION) return (a, b) => a.station.localeCompare(b.station);
+  if (column === STATUS_TOTAL) {
+    return (a, b) => b.total - a.total || statusDefaultOrder(a, b);
+  }
+  if (column) {
+    return (a, b) => {
+      const ca = a.cells.get(column);
+      const cb = b.cells.get(column);
+      const ta = ca ? ca.top : -1;
+      const tb = cb ? cb.top : -1;
+      return tb - ta || (cb ? cb.count : 0) - (ca ? ca.count : 0) || statusDefaultOrder(a, b);
+    };
+  }
+  return statusDefaultOrder;
+}
+
+function statusTipHtml(station, area, cell) {
+  const esc = (v) =>
+    String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  const head = "<b>" + esc(station) + "</b><br>" + esc(area) + ": ";
+  if (!cell) return head + "no alerts";
+  const lines = Array.from(cell.sections.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([sec, n]) => "\u2022 " + esc(sec) + (n > 1 ? " (" + n + ")" : ""));
+  return (
+    head + cell.count + (cell.count === 1 ? " alert" : " alerts") +
+    (cell.ongoing ? ", ongoing" : "") + "<br>" + lines.join("<br>")
   );
-  return "<b>" + s.station + "</b><br>" + alertWord(s.total) + "<br>" + lines.join("<br>");
 }
 
-function summaryAreas(s) {
-  return INSIGHT_SOURCES.map((src) => src[2])
-    .filter((area) => s.areas.has(area))
-    .map((area) => [area, s.areas.get(area)]);
+let _statusTip = null;
+
+function statusTip() {
+  if (_statusTip && _statusTip.isConnected) return _statusTip;
+  _statusTip = el("div", "wx-ov-tip");
+  document.body.appendChild(_statusTip);
+  return _statusTip;
 }
 
-function summaryStationId(station) {
-  return "s\u0000" + station;
+function placeStatusTip(tip, target) {
+  const r = target.getBoundingClientRect();
+  const w = tip.offsetWidth;
+  const h = tip.offsetHeight;
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  let left = r.right + 8;
+  if (left + w > vw - 8) left = Math.max(8, r.left - w - 8);
+  let top = r.top + r.height / 2 - h / 2;
+  top = Math.max(8, Math.min(top, vh - h - 8));
+  tip.style.left = Math.round(left) + "px";
+  tip.style.top = Math.round(top) + "px";
 }
 
-function summaryLeafId(station, area) {
-  return "s\u0000" + station + "\u0000" + area;
+function hideStatusTip() {
+  if (_statusTip) _statusTip.style.display = "none";
 }
 
-function summaryFigure(ranked, rootLabel) {
-  const ids = [SUMMARY_ROOT_ID];
-  const labels = [rootLabel];
-  const parents = [""];
-  const values = [0];
-  const colors = [SUMMARY_ROOT_COLOR];
-  const hover = [""];
-  const leaves = new Map();
-  let grand = 0;
-
-  for (const s of ranked) {
-    ids.push(summaryStationId(s.station));
-    labels.push(s.station);
-    parents.push(SUMMARY_ROOT_ID);
-    values.push(s.total);
-    colors.push(SUMMARY_STATION_COLOR);
-    hover.push(summaryStationHover(s));
-    grand += s.total;
-    for (const [area, entry] of summaryAreas(s)) {
-      const id = summaryLeafId(s.station, area);
-      ids.push(id);
-      labels.push(area);
-      parents.push(summaryStationId(s.station));
-      values.push(entry.count);
-      colors.push(AREA_COLORS[area] || "#a8a29e");
-      hover.push(summaryLeafHover(s.station, area, entry));
-      leaves.set(id, { station: s.station, tab: AREA_TAB.get(area) || null });
-    }
+function statusCell(r, area, panel) {
+  const td = el("td", "wx-ov-cell");
+  const cell = r.cells.get(area);
+  if (cell) {
+    const col = statusColor(statusLevel(cell.top));
+    td.style.background = col.css;
+    if (col.dark) td.classList.add("dark");
+    if (cell.ongoing) td.classList.add("live");
+    td.classList.add("hit");
+    td.textContent = String(cell.count);
+    td.addEventListener("click", () => {
+      hideStatusTip();
+      openStationChart(panel, r.station, AREA_TAB.get(area) || null);
+    });
   }
-  values[0] = grand;
-  hover[0] = "<b>" + rootLabel + "</b><br>" + alertWord(grand) + " across " +
-    ranked.length + (ranked.length === 1 ? " station" : " stations");
-
-  const height = isMobile() ? SUMMARY_HEIGHT_MOBILE : SUMMARY_HEIGHT;
-  const data = [{
-    type: "treemap",
-    ids: ids,
-    labels: labels,
-    parents: parents,
-    values: values,
-    branchvalues: "total",
-    sort: true,
-    customdata: hover,
-    hovertemplate: "%{customdata}<extra></extra>",
-    texttemplate: "%{label}<br>%{value}",
-    textposition: "top left",
-    insidetextfont: { size: 11 },
-    marker: {
-      colors: colors,
-      line: { width: 1.5, color: "#ffffff" },
-      pad: { t: 20, l: 3, r: 3, b: 3 },
-    },
-    tiling: { packing: "squarify", pad: 2 },
-    pathbar: { visible: true, thickness: 18, textfont: { size: 10 } },
-    root: { color: SUMMARY_ROOT_COLOR },
-  }];
-  const layout = {
-    height: height,
-    margin: { l: 2, r: 2, t: 4, b: 2 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    font: { family: "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Arial, sans-serif", size: 11, color: "#26231f" },
-    showlegend: false,
-    hoverlabel: { bgcolor: "#ffffff", bordercolor: "#e8e6e3", font: { size: 11, color: "#26231f" }, align: "left" },
-  };
-  return { data: data, layout: layout, height: height, leaves: leaves };
+  td.addEventListener("pointerenter", () => {
+    const tip = statusTip();
+    tip.innerHTML = statusTipHtml(r.station, area, cell);
+    tip.style.display = "block";
+    placeStatusTip(tip, td);
+    const tab = AREA_TAB.get(area);
+    if (cell && tab && tab !== DATA_TAB) prefetchDetail(r.station, tab);
+  });
+  td.addEventListener("pointerleave", () => {
+    hideStatusTip();
+    cancelPrefetch();
+  });
+  return td;
 }
 
-function summaryLegend(ranked) {
-  const used = new Set();
-  for (const s of ranked) for (const area of s.areas.keys()) used.add(area);
-  const box = el("div", "wx-ov-summary-legend");
-  for (const src of INSIGHT_SOURCES) {
-    const area = src[2];
-    if (!used.has(area)) continue;
-    const item = el("span", "wx-ov-summary-key");
-    const sw = el("span", "sw");
-    sw.style.background = AREA_COLORS[area] || "#a8a29e";
-    item.appendChild(sw);
-    item.appendChild(document.createTextNode(area));
-    box.appendChild(item);
-  }
+function statusLegend() {
+  const box = el("div", "wx-ov-status-legend");
+  const scale = el("span", "wx-ov-status-key");
+  scale.appendChild(ovText("span", null, "Lower"));
+  const ramp = el("span", "ramp");
+  const stops = STATUS_SCALE.filter((s) => s[0] >= STATUS_FLOOR)
+    .map((s) => s[1] + " " + Math.round(((s[0] - STATUS_FLOOR) / (1 - STATUS_FLOOR)) * 100) + "%");
+  ramp.style.background = "linear-gradient(90deg," + stops.join(",") + ")";
+  scale.appendChild(ramp);
+  scale.appendChild(ovText("span", null, "Higher severity"));
+  box.appendChild(scale);
+  const live = el("span", "wx-ov-status-key");
+  live.appendChild(el("span", "ring"));
+  live.appendChild(ovText("span", null, "Ongoing"));
+  box.appendChild(live);
   return box;
 }
 
 function overviewSummary(findings, panel) {
-  const ranked = summaryStations(findings);
-  if (!ranked.length) return null;
-  const total = ranked.reduce((n, s) => n + s.total, 0);
-  const fig = summaryFigure(ranked, state.fc || "All stations");
+  const rows = statusRows(findings);
+  if (!rows.length) return null;
+  ensureOverviewStyles();
 
   const card = el("div", "wx-ov-summary");
   const head = el("div", "wx-ov-summary-head");
-  const title = el("div", "wx-ov-summary-title");
-  title.textContent =
-    "Alerts by station \u2014 " + alertWord(total) + ", " + ranked.length +
-    (ranked.length === 1 ? " station" : " stations");
-  head.appendChild(title);
-  head.appendChild(summaryLegend(ranked));
+  head.appendChild(ovText("div", "wx-ov-summary-title", "Alerts by station and sensor"));
+  head.appendChild(statusLegend());
   card.appendChild(head);
 
-  const g = graph({ data: fig.data, layout: fig.layout }, { height: fig.height, noModeBar: true });
-  card.appendChild(g);
-  panel._wxSummary = card;
+  const scroll = el("div", "wx-ov-status-wrap");
+  const table = el("table", "wx-ov-status");
+  const thead = el("thead");
+  const headRow = el("tr");
+  const tbody = el("tbody");
+  const columns = [STATUS_STATION].concat(STATUS_AREAS, [STATUS_TOTAL]);
+  const heads = new Map();
+  let sortBy = null;
 
-  const leafFor = (ev) => {
-    const pt = ev && ev.points && ev.points[0];
-    if (!pt) return null;
-    const id = pt.id !== undefined && pt.id !== null
-      ? String(pt.id)
-      : pt.parent ? String(pt.parent) + "\u0000" + String(pt.label) : null;
-    return id === null ? null : fig.leaves.get(id) || null;
+  const trs = new Map();
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(ovText("td", "wx-ov-status-name", r.station));
+    for (const area of STATUS_AREAS) tr.appendChild(statusCell(r, area, panel));
+    tr.appendChild(ovText("td", "wx-ov-status-total", r.total));
+    trs.set(r.station, tr);
+  }
+
+  const apply = () => {
+    for (const [name, th] of heads) {
+      const mark = th.querySelector(".a");
+      if (mark) mark.remove();
+      if (name === sortBy) th.appendChild(ovText("span", "a", "\u2193"));
+    }
+    for (const r of rows.slice().sort(statusSorter(sortBy))) tbody.appendChild(trs.get(r.station));
+    scroll.scrollTop = 0;
   };
 
-  g._wxOnDrawn(() => {
-    const pd = g._wxPlotDiv;
-    if (!pd || typeof pd.on !== "function") return;
-    pd.on("plotly_treemapclick", (ev) => {
-      const hit = leafFor(ev);
-      if (!hit) return true;
-      openStationChart(panel, hit.station, hit.tab);
-      return false;
+  for (const name of columns) {
+    const th = ovText("th", name === STATUS_STATION ? "l" : null, name);
+    th.title = name === STATUS_STATION
+      ? "Sort by station name"
+      : name === STATUS_TOTAL
+        ? "Sort by number of alerts"
+        : "Sort by " + name + " severity";
+    th.addEventListener("click", () => {
+      sortBy = sortBy === name ? null : name;
+      apply();
     });
-    pd.on("plotly_hover", (ev) => {
-      const hit = leafFor(ev);
-      if (hit && hit.tab && hit.tab !== DATA_TAB) prefetchDetail(hit.station, hit.tab);
-    });
-    pd.on("plotly_unhover", cancelPrefetch);
-  });
+    heads.set(name, th);
+    headRow.appendChild(th);
+  }
 
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  scroll.addEventListener("scroll", hideStatusTip, { passive: true });
+  card.appendChild(scroll);
+  apply();
+
+  panel._wxSummary = card;
   return card;
 }
 
