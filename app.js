@@ -132,7 +132,7 @@ const inflight = new Map();
 function fetchBody(filename) {
   const hit = rawCache.get(filename);
   if (hit) return hit;
-  const job = fetch(BUCKET_BASE + filename, { cache: "default" }).then((res) =>
+  const job = fetch(BUCKET_BASE + filename, { cache: "no-cache" }).then((res) =>
     res.ok ? res.text() : null
   );
   rawCache.set(filename, job);
@@ -6408,7 +6408,7 @@ async function runAnalysis() {
 
 async function populateDropdown() {
   try {
-    const res = await fetch(CONFIG_BASE + "fire_centres.json", { cache: "default" });
+    const res = await fetch(CONFIG_BASE + "fire_centres.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const centres = await res.json();
     if (!Array.isArray(centres) || !centres.length) throw new Error("no fire centres");
