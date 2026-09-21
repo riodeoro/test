@@ -4133,11 +4133,17 @@ function ensureOverviewStyles() {
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
     ".wx-ov-summary{flex:0 0 auto;background:var(--surface);overflow:hidden;",
-    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 4px;",
+    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 8px;",
     "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
     ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
     "text-transform:uppercase;color:var(--text-muted);}",
-    ".wx-ov-summary .nsewdrag{cursor:pointer;}",
+    ".wx-ov-summary-head{display:flex;flex-wrap:wrap;align-items:center;",
+    "justify-content:space-between;gap:4px 12px;margin-bottom:6px;}",
+    ".wx-ov-summary-legend{display:flex;flex-wrap:wrap;gap:4px 10px;}",
+    ".wx-ov-summary-key{display:inline-flex;align-items:center;gap:4px;",
+    "font-size:10px;color:var(--text-muted);}",
+    ".wx-ov-summary-key .sw{width:9px;height:9px;border-radius:2px;display:inline-block;}",
+    ".wx-ov-summary .treemaplayer path{cursor:pointer;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
     ".wx-ov-summary{padding:8px 8px 2px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
@@ -4933,13 +4939,15 @@ function overviewTable(findings, panel, columns, onPick) {
   return wrap;
 }
 
-const SUMMARY_TOP_N = 15;
+const SUMMARY_HEIGHT = 340;
 
-const SUMMARY_BAR_PX = 22;
+const SUMMARY_HEIGHT_MOBILE = 300;
 
-const SUMMARY_CHROME_PX = 70;
+const SUMMARY_ROOT_ID = "all";
 
-const SUMMARY_MIN_PX = 150;
+const SUMMARY_ROOT_COLOR = "#f5f5f4";
+
+const SUMMARY_STATION_COLOR = "#e7e5e4";
 
 const AREA_COLORS = {
   Data: "#94a3b8",
@@ -4992,125 +5000,165 @@ function summaryStations(findings) {
   );
 }
 
-function summaryHover(station, area, entry) {
+function alertWord(n) {
+  return n + (n === 1 ? " alert" : " alerts");
+}
+
+function summaryLeafHover(station, area, entry) {
   const lines = Array.from(entry.sections.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([sec, n]) => "\u2022 " + sec + (n > 1 ? " (" + n + ")" : ""));
   return (
-    "<b>" + station + "</b><br>" + area + ": " + entry.count +
-    (entry.count === 1 ? " alert" : " alerts") + "<br>" + lines.join("<br>")
+    "<b>" + station + "</b><br>" + area + ": " + alertWord(entry.count) +
+    "<br>" + lines.join("<br>") + "<br><i>Click to open</i>"
   );
 }
 
-function summaryFigure(ranked) {
-  const stations = ranked.map((s) => s.station);
-  const areas = INSIGHT_SOURCES.map((s) => s[2]).filter((a) =>
-    ranked.some((s) => s.areas.has(a))
+function summaryStationHover(s) {
+  const lines = summaryAreas(s).map(
+    ([area, entry]) => "\u2022 " + area + ": " + entry.count
   );
-  const data = areas.map((area) => {
-    const x = [];
-    const hover = [];
-    for (const s of ranked) {
-      const entry = s.areas.get(area);
-      x.push(entry ? entry.count : null);
-      hover.push(entry ? summaryHover(s.station, area, entry) : "");
+  return "<b>" + s.station + "</b><br>" + alertWord(s.total) + "<br>" + lines.join("<br>");
+}
+
+function summaryAreas(s) {
+  return INSIGHT_SOURCES.map((src) => src[2])
+    .filter((area) => s.areas.has(area))
+    .map((area) => [area, s.areas.get(area)]);
+}
+
+function summaryStationId(station) {
+  return "s\u0000" + station;
+}
+
+function summaryLeafId(station, area) {
+  return "s\u0000" + station + "\u0000" + area;
+}
+
+function summaryFigure(ranked, rootLabel) {
+  const ids = [SUMMARY_ROOT_ID];
+  const labels = [rootLabel];
+  const parents = [""];
+  const values = [0];
+  const colors = [SUMMARY_ROOT_COLOR];
+  const hover = [""];
+  const leaves = new Map();
+  let grand = 0;
+
+  for (const s of ranked) {
+    ids.push(summaryStationId(s.station));
+    labels.push(s.station);
+    parents.push(SUMMARY_ROOT_ID);
+    values.push(s.total);
+    colors.push(SUMMARY_STATION_COLOR);
+    hover.push(summaryStationHover(s));
+    grand += s.total;
+    for (const [area, entry] of summaryAreas(s)) {
+      const id = summaryLeafId(s.station, area);
+      ids.push(id);
+      labels.push(area);
+      parents.push(summaryStationId(s.station));
+      values.push(entry.count);
+      colors.push(AREA_COLORS[area] || "#a8a29e");
+      hover.push(summaryLeafHover(s.station, area, entry));
+      leaves.set(id, { station: s.station, tab: AREA_TAB.get(area) || null });
     }
-    return {
-      type: "bar",
-      orientation: "h",
-      name: area,
-      y: stations,
-      x: x,
-      customdata: hover,
-      hovertemplate: "%{customdata}<extra></extra>",
-      marker: { color: AREA_COLORS[area] || "#a8a29e", line: { width: 0 } },
-      meta: { area: area },
-    };
-  });
-  const maxTotal = ranked.reduce((m, s) => Math.max(m, s.total), 0);
-  const height = Math.max(
-    SUMMARY_MIN_PX,
-    stations.length * SUMMARY_BAR_PX + SUMMARY_CHROME_PX
-  );
+  }
+  values[0] = grand;
+  hover[0] = "<b>" + rootLabel + "</b><br>" + alertWord(grand) + " across " +
+    ranked.length + (ranked.length === 1 ? " station" : " stations");
+
+  const height = isMobile() ? SUMMARY_HEIGHT_MOBILE : SUMMARY_HEIGHT;
+  const data = [{
+    type: "treemap",
+    ids: ids,
+    labels: labels,
+    parents: parents,
+    values: values,
+    branchvalues: "total",
+    sort: true,
+    customdata: hover,
+    hovertemplate: "%{customdata}<extra></extra>",
+    texttemplate: "%{label}<br>%{value}",
+    textposition: "top left",
+    insidetextfont: { size: 11 },
+    marker: {
+      colors: colors,
+      line: { width: 1.5, color: "#ffffff" },
+      pad: { t: 20, l: 3, r: 3, b: 3 },
+    },
+    tiling: { packing: "squarify", pad: 2 },
+    pathbar: { visible: true, thickness: 18, textfont: { size: 10 } },
+    root: { color: SUMMARY_ROOT_COLOR },
+  }];
   const layout = {
-    barmode: "stack",
-    bargap: 0.28,
     height: height,
-    margin: { l: 10, r: 16, t: 28, b: 30 },
+    margin: { l: 2, r: 2, t: 4, b: 2 },
     paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { family: "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Arial, sans-serif", size: 10, color: "#57534e" },
-    dragmode: false,
-    hovermode: "closest",
-    showlegend: true,
-    legend: {
-      orientation: "h",
-      x: 0,
-      xanchor: "left",
-      y: 1,
-      yanchor: "bottom",
-      font: { size: 10 },
-      itemclick: false,
-      itemdoubleclick: false,
-    },
+    font: { family: "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Arial, sans-serif", size: 11, color: "#26231f" },
+    showlegend: false,
     hoverlabel: { bgcolor: "#ffffff", bordercolor: "#e8e6e3", font: { size: 11, color: "#26231f" }, align: "left" },
-    xaxis: {
-      fixedrange: true,
-      tickformat: "d",
-      dtick: maxTotal <= 10 ? 1 : null,
-      gridcolor: "#f0eeeb",
-      zeroline: false,
-      title: { text: "Alerts", font: { size: 10 } },
-    },
-    yaxis: {
-      fixedrange: true,
-      automargin: true,
-      type: "category",
-      categoryorder: "array",
-      categoryarray: stations,
-      autorange: "reversed",
-      tickfont: { size: 10, color: "#26231f" },
-    },
   };
-  return { data: data, layout: layout, height: height };
+  return { data: data, layout: layout, height: height, leaves: leaves };
+}
+
+function summaryLegend(ranked) {
+  const used = new Set();
+  for (const s of ranked) for (const area of s.areas.keys()) used.add(area);
+  const box = el("div", "wx-ov-summary-legend");
+  for (const src of INSIGHT_SOURCES) {
+    const area = src[2];
+    if (!used.has(area)) continue;
+    const item = el("span", "wx-ov-summary-key");
+    const sw = el("span", "sw");
+    sw.style.background = AREA_COLORS[area] || "#a8a29e";
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode(area));
+    box.appendChild(item);
+  }
+  return box;
 }
 
 function overviewSummary(findings, panel) {
-  const all = summaryStations(findings);
-  if (!all.length) return null;
-  const ranked = all.slice(0, SUMMARY_TOP_N);
-  const fig = summaryFigure(ranked);
+  const ranked = summaryStations(findings);
+  if (!ranked.length) return null;
+  const total = ranked.reduce((n, s) => n + s.total, 0);
+  const fig = summaryFigure(ranked, state.fc || "All stations");
 
   const card = el("div", "wx-ov-summary");
+  const head = el("div", "wx-ov-summary-head");
   const title = el("div", "wx-ov-summary-title");
   title.textContent =
-    all.length > ranked.length
-      ? "Alerts by station \u2014 top " + ranked.length + " of " + all.length
-      : "Alerts by station";
-  card.appendChild(title);
+    "Alerts by station \u2014 " + alertWord(total) + ", " + ranked.length +
+    (ranked.length === 1 ? " station" : " stations");
+  head.appendChild(title);
+  head.appendChild(summaryLegend(ranked));
+  card.appendChild(head);
 
   const g = graph({ data: fig.data, layout: fig.layout }, { height: fig.height, noModeBar: true });
   card.appendChild(g);
   panel._wxSummary = card;
 
-  const pointInfo = (ev) => {
+  const leafFor = (ev) => {
     const pt = ev && ev.points && ev.points[0];
-    if (!pt || pt.x === null || pt.x === undefined) return null;
-    const trace = pt.data || {};
-    const area = trace.meta && trace.meta.area ? trace.meta.area : trace.name;
-    return { station: String(pt.y), tab: AREA_TAB.get(area) || null };
+    if (!pt) return null;
+    const id = pt.id !== undefined && pt.id !== null
+      ? String(pt.id)
+      : pt.parent ? String(pt.parent) + "\u0000" + String(pt.label) : null;
+    return id === null ? null : fig.leaves.get(id) || null;
   };
 
   g._wxOnDrawn(() => {
     const pd = g._wxPlotDiv;
     if (!pd || typeof pd.on !== "function") return;
-    pd.on("plotly_click", (ev) => {
-      const hit = pointInfo(ev);
-      if (!hit) return;
+    pd.on("plotly_treemapclick", (ev) => {
+      const hit = leafFor(ev);
+      if (!hit) return true;
       openStationChart(panel, hit.station, hit.tab);
+      return false;
     });
     pd.on("plotly_hover", (ev) => {
-      const hit = pointInfo(ev);
+      const hit = leafFor(ev);
       if (hit && hit.tab && hit.tab !== DATA_TAB) prefetchDetail(hit.station, hit.tab);
     });
     pd.on("plotly_unhover", cancelPrefetch);
