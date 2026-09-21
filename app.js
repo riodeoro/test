@@ -4132,17 +4132,7 @@ function ensureOverviewStyles() {
     ".wx-ov-type{font-size:10px;letter-spacing:.03em;color:#a9a49c;}",
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
-    ".wx-ov-summary{flex:0 0 auto;background:var(--surface);overflow:hidden;",
-    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 6px;",
-    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
-    ".wx-ov-summary-head{display:flex;flex-wrap:wrap;align-items:baseline;",
-    "justify-content:space-between;gap:2px 12px;}",
-    ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
-    "text-transform:uppercase;color:var(--text-muted);}",
-    ".wx-ov-summary-note{font-size:10px;color:var(--text-muted);}",
-    ".wx-ov-summary .nsewdrag{cursor:pointer;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
-    ".wx-ov-summary{padding:8px 8px 4px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
   document.head.appendChild(st);
@@ -4179,7 +4169,6 @@ const PANEL_CHROME = 96;
 
 const OVERVIEW_SORTS = {
   Sensor: (a, b) => ovAreaRank(a) - ovAreaRank(b),
-  Station: (a, b) => a.station.localeCompare(b.station),
   Type: (a, b) => String(a.section || "").localeCompare(String(b.section || "")),
   Alert: (a, b) => ovDetail(a).localeCompare(ovDetail(b)),
   Time: (a, b) => ovStamp(a) - ovStamp(b),
@@ -4254,7 +4243,6 @@ function closeOverviewChart(panel) {
   resetOverviewChart(panel);
   panel.style.display = "none";
   panel.style.height = "";
-  showSummary(panel, true);
   const grid = panel._wxGrid;
   if (!grid) return;
   if (typeof grid._wxClearFilter === "function" && grid._wxClearFilter()) return;
@@ -4351,7 +4339,6 @@ function openOverviewChart(panel, f, row) {
   ensureDetailStyles();
   const wasOpen = panel.style.display !== "none";
   resetOverviewChart(panel);
-  showSummary(panel, false);
   panel.style.display = "";
   panel._wxRow = row || null;
   panel._wxStation = f.station || null;
@@ -4818,7 +4805,29 @@ function groupRank(entries) {
   return { area: area, section: section };
 }
 
+function stationGroupOrder(entries, dir) {
+  const count = new Map();
+  const top = new Map();
+  for (const e of entries) {
+    const k = String(e.f.station || "");
+    count.set(k, (count.get(k) || 0) + 1);
+    top.set(k, Math.max(top.has(k) ? top.get(k) : -Infinity, ovSeverity(e.f)));
+  }
+  return entries.slice().sort((a, b) => {
+    const sa = String(a.f.station || "");
+    const sb = String(b.f.station || "");
+    if (sa !== sb) {
+      return (
+        dir * (count.get(sb) - count.get(sa) || top.get(sb) - top.get(sa)) ||
+        sa.localeCompare(sb)
+      );
+    }
+    return ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i;
+  });
+}
+
 function sortRows(entries, column, dir) {
+  if (dir && column === "Station") return stationGroupOrder(entries, dir);
   const flat = dir && column !== "Sensor" && column !== "Type";
   if (flat) {
     const cmp = OVERVIEW_SORTS[column];
@@ -4888,7 +4897,8 @@ function overviewTable(findings, panel, columns, onPick) {
       if (mark) mark.remove();
       if (name !== column || !dir) continue;
       const arrow = el("span", "a");
-      arrow.textContent = dir > 0 ? "\u2191" : "\u2193";
+      const down = name === "Station" ? dir > 0 : dir < 0;
+      arrow.textContent = down ? "\u2193" : "\u2191";
       cell.appendChild(arrow);
     }
     const ordered = sortRows(entries, column, dir);
@@ -4934,199 +4944,6 @@ function overviewTable(findings, panel, columns, onPick) {
   wrap.appendChild(table);
   apply();
   return wrap;
-}
-
-const SUMMARY_TOP_N = 15;
-
-const SUMMARY_BAR_PX = 18;
-
-const SUMMARY_CHROME_PX = 58;
-
-const SUMMARY_MIN_PX = 130;
-
-const SUMMARY_AREAS = INSIGHT_SOURCES.map((s) => s[2]);
-
-const AREA_COLORS = {
-  Data: "#64748b",
-  RH: "#2f6f9e",
-  Wind: "#3f8f45",
-  Temp: "#ea580c",
-  Precip: "#5ba3c4",
-  Power: "#7c3aed",
-};
-
-const AREA_TAB = new Map(INSIGHT_SOURCES.map((s) => [s[2], s[1]]));
-
-function showSummary(panel, on) {
-  const summary = panel && panel._wxSummary;
-  if (!summary) return;
-  const visible = summary.style.display !== "none";
-  if (visible === on) return;
-  summary.style.display = on ? "" : "none";
-  if (!on) return;
-  requestAnimationFrame(() => {
-    const g = findGraphWrap(summary);
-    if (g && typeof g._wxResize === "function") g._wxResize();
-    sizeOverviewShell();
-  });
-}
-
-function summaryStations(findings) {
-  const byStation = new Map();
-  for (const f of findings) {
-    if (!f.station) continue;
-    let s = byStation.get(f.station);
-    if (!s) {
-      s = { station: f.station, total: 0, areas: new Map() };
-      byStation.set(f.station, s);
-    }
-    const area = String(f.area || "");
-    let a = s.areas.get(area);
-    if (!a) {
-      a = { count: 0, sections: new Map() };
-      s.areas.set(area, a);
-    }
-    a.count += 1;
-    const sec = String(f.section || "Other");
-    a.sections.set(sec, (a.sections.get(sec) || 0) + 1);
-    s.total += 1;
-  }
-  return Array.from(byStation.values()).sort(
-    (a, b) => b.total - a.total || a.station.localeCompare(b.station)
-  );
-}
-
-function summaryHover(station, area, entry, total) {
-  const lines = Array.from(entry.sections.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([sec, n]) => "\u2022 " + sec + (n > 1 ? " (" + n + ")" : ""));
-  return (
-    "<b>" + station + "</b> (" + total + " total)<br>" + area + ": " + entry.count +
-    (entry.count === 1 ? " alert" : " alerts") + "<br>" + lines.join("<br>")
-  );
-}
-
-function summaryFigure(ranked) {
-  const stations = ranked.map((s) => s.station);
-  const areas = SUMMARY_AREAS.filter((a) => ranked.some((s) => s.areas.has(a)));
-  const data = areas.map((area) => {
-    const x = [];
-    const hover = [];
-    for (const s of ranked) {
-      const entry = s.areas.get(area);
-      x.push(entry ? entry.count : null);
-      hover.push(entry ? summaryHover(s.station, area, entry, s.total) : "");
-    }
-    return {
-      type: "bar",
-      orientation: "h",
-      name: area,
-      y: stations,
-      x: x,
-      customdata: hover,
-      hovertemplate: "%{customdata}<extra></extra>",
-      marker: { color: AREA_COLORS[area] || "#a8a29e", line: { width: 0 } },
-      meta: { area: area },
-    };
-  });
-  const maxTotal = ranked.reduce((m, s) => Math.max(m, s.total), 0);
-  const height = Math.max(
-    SUMMARY_MIN_PX,
-    stations.length * SUMMARY_BAR_PX + SUMMARY_CHROME_PX
-  );
-  const layout = {
-    barmode: "stack",
-    bargap: 0.3,
-    height: height,
-    margin: { l: 10, r: 12, t: 24, b: 26 },
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    font: { size: 10, color: "#57534e" },
-    dragmode: false,
-    hovermode: "closest",
-    showlegend: true,
-    legend: {
-      orientation: "h",
-      x: 0,
-      xanchor: "left",
-      y: 1,
-      yanchor: "bottom",
-      bgcolor: "rgba(255,255,255,0)",
-      font: { size: 10, color: "#57534e" },
-      itemclick: false,
-      itemdoubleclick: false,
-    },
-    hoverlabel: {
-      bgcolor: DETAIL_HOVER_BG,
-      bordercolor: DETAIL_HOVER_BORDER,
-      font: { size: 11, color: DETAIL_HOVER_TEXT },
-      align: "left",
-    },
-    xaxis: {
-      fixedrange: true,
-      tickformat: "d",
-      dtick: maxTotal <= 10 ? 1 : null,
-      gridcolor: "#f1f0ee",
-      zeroline: false,
-      tickfont: { size: 9, color: "#8a857d" },
-    },
-    yaxis: {
-      fixedrange: true,
-      automargin: true,
-      type: "category",
-      categoryorder: "array",
-      categoryarray: stations,
-      autorange: "reversed",
-      ticksuffix: "  ",
-      tickfont: { size: 10, color: "#26231f" },
-    },
-  };
-  return { data: data, layout: layout, height: height };
-}
-
-function overviewSummary(findings, panel) {
-  const all = summaryStations(findings);
-  if (!all.length) return null;
-  const ranked = all.slice(0, SUMMARY_TOP_N);
-  const fig = summaryFigure(ranked);
-
-  const card = el("div", "wx-ov-summary");
-  const head = el("div", "wx-ov-summary-head");
-  head.appendChild(ovText("div", "wx-ov-summary-title", "Alerts by station"));
-  if (all.length > ranked.length) {
-    head.appendChild(
-      ovText("div", "wx-ov-summary-note", "Top " + ranked.length + " of " + all.length + " stations")
-    );
-  }
-  card.appendChild(head);
-
-  const g = graph({ data: fig.data, layout: fig.layout }, { height: fig.height, noModeBar: true });
-  card.appendChild(g);
-  panel._wxSummary = card;
-
-  const pointInfo = (ev) => {
-    const pt = ev && ev.points && ev.points[0];
-    if (!pt || pt.x === null || pt.x === undefined) return null;
-    const trace = pt.data || {};
-    const area = trace.meta && trace.meta.area ? trace.meta.area : trace.name;
-    return { station: String(pt.y), tab: AREA_TAB.get(area) || null };
-  };
-
-  g._wxOnDrawn(() => {
-    const pd = g._wxPlotDiv;
-    if (!pd || typeof pd.on !== "function") return;
-    pd.on("plotly_click", (ev) => {
-      const hit = pointInfo(ev);
-      if (hit) openStationChart(panel, hit.station, hit.tab);
-    });
-    pd.on("plotly_hover", (ev) => {
-      const hit = pointInfo(ev);
-      if (hit && hit.tab && hit.tab !== DATA_TAB) prefetchDetail(hit.station, hit.tab);
-    });
-    pd.on("plotly_unhover", cancelPrefetch);
-  });
-
-  return card;
 }
 
 const OVERVIEW_SHELL_GAP = 8;
@@ -5201,8 +5018,6 @@ async function buildOverview(fc, hours) {
 
   const shell = el("div", "wx-ov-shell");
   const panel = chartPanel();
-  const summary = overviewSummary(findings, panel);
-  if (summary) shell.appendChild(summary);
   shell.appendChild(panel);
   shell.appendChild(overviewTable(findings, panel, OVERVIEW_COLUMNS));
   box.appendChild(shell);
