@@ -4132,47 +4132,17 @@ function ensureOverviewStyles() {
     ".wx-ov-type{font-size:10px;letter-spacing:.03em;color:#a9a49c;}",
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
-    ".wx-ov-summary{flex:0 0 auto;display:flex;flex-direction:column;max-height:42%;",
-    "min-height:0;background:var(--surface);border:1px solid var(--line);",
-    "border-radius:10px;padding:10px 12px 8px;box-shadow:0 1px 3px rgba(0,0,0,.04);",
-    "margin-bottom:10px;}",
-    ".wx-ov-summary-head{display:flex;flex-wrap:wrap;align-items:center;",
-    "justify-content:space-between;gap:4px 12px;margin-bottom:6px;}",
+    ".wx-ov-summary{flex:0 0 auto;background:var(--surface);overflow:hidden;",
+    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 6px;",
+    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
+    ".wx-ov-summary-head{display:flex;flex-wrap:wrap;align-items:baseline;",
+    "justify-content:space-between;gap:2px 12px;}",
     ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
     "text-transform:uppercase;color:var(--text-muted);}",
-    ".wx-ov-status-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;}",
-    ".wx-ov-status-key{display:inline-flex;align-items:center;gap:6px;",
-    "font-size:10px;color:var(--text-muted);}",
-    ".wx-ov-status-key .ramp{width:72px;height:8px;border-radius:2px;display:inline-block;}",
-    ".wx-ov-status-key .ring{width:10px;height:10px;border-radius:2px;display:inline-block;",
-    "background:#fde047;box-shadow:inset 0 0 0 1.5px var(--text);}",
-    ".wx-ov-status-wrap{flex:1 1 auto;min-height:0;overflow:auto;}",
-    ".wx-ov-status{border-collapse:separate;border-spacing:2px 1px;width:100%;}",
-    ".wx-ov-status th{position:sticky;top:0;z-index:1;background:var(--surface);",
-    "padding:4px 6px;font-size:9px;font-weight:600;letter-spacing:.06em;",
-    "text-transform:uppercase;color:var(--text-muted);text-align:center;",
-    "white-space:nowrap;cursor:pointer;user-select:none;}",
-    ".wx-ov-status th.l{text-align:left;padding-left:0;}",
-    ".wx-ov-status th:hover{color:var(--text);}",
-    ".wx-ov-status th .a{margin-left:4px;color:var(--accent);}",
-    ".wx-ov-status-name{font-size:11px;font-weight:600;letter-spacing:-.01em;",
-    "color:var(--text);white-space:nowrap;padding:0 10px 0 0;width:1%;}",
-    ".wx-ov-cell{background:#f8fafc;height:20px;min-width:44px;text-align:center;",
-    "font-size:10px;font-weight:600;color:var(--text);border-radius:2px;",
-    "font-variant-numeric:tabular-nums;}",
-    ".wx-ov-cell.dark{color:#ffffff;}",
-    ".wx-ov-cell.hit{cursor:pointer;}",
-    ".wx-ov-cell.hit:hover{filter:brightness(.94);}",
-    ".wx-ov-cell.live{box-shadow:inset 0 0 0 1.5px var(--text);}",
-    ".wx-ov-status-total{font-size:10px;color:var(--text-muted);text-align:center;",
-    "min-width:36px;font-variant-numeric:tabular-nums;}",
-    ".wx-ov-tip{position:fixed;z-index:1000;display:none;pointer-events:none;",
-    "max-width:320px;background:#ffffff;border:1px solid #e8e6e3;border-radius:4px;",
-    "padding:6px 8px;font-size:11px;line-height:1.4;color:#26231f;",
-    "box-shadow:0 2px 8px rgba(0,0,0,.08);}",
+    ".wx-ov-summary-note{font-size:10px;color:var(--text-muted);}",
+    ".wx-ov-summary .nsewdrag{cursor:pointer;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
-    ".wx-ov-summary{padding:8px 8px 6px;}",
-    ".wx-ov-cell{min-width:30px;}",
+    ".wx-ov-summary{padding:8px 8px 4px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
   document.head.appendChild(st);
@@ -4966,27 +4936,26 @@ function overviewTable(findings, panel, columns, onPick) {
   return wrap;
 }
 
-const STATUS_SCALE = [
-  [0.0, "#f8fafc"],
-  [0.25, "#fde047"],
-  [0.5, "#f97316"],
-  [0.75, "#dc2626"],
-  [1.0, "#450a0a"],
-];
+const SUMMARY_TOP_N = 15;
 
-const STATUS_FLOOR = 0.25;
+const SUMMARY_BAR_PX = 18;
 
-const STATUS_SEV_MIN = (SEVERITY_RANK_FLOOR - SEVERITY_DEFAULT_RANK + 1) * SEVERITY_CATEGORY_STEP;
+const SUMMARY_CHROME_PX = 58;
 
-const STATUS_SEV_MAX = (SEVERITY_RANK_FLOOR - 1) * SEVERITY_CATEGORY_STEP + SEVERITY_MAX_MODIFIER;
+const SUMMARY_MIN_PX = 130;
 
-const STATUS_AREAS = INSIGHT_SOURCES.map((s) => s[2]);
+const SUMMARY_AREAS = INSIGHT_SOURCES.map((s) => s[2]);
+
+const AREA_COLORS = {
+  Data: "#64748b",
+  RH: "#2f6f9e",
+  Wind: "#3f8f45",
+  Temp: "#ea580c",
+  Precip: "#5ba3c4",
+  Power: "#7c3aed",
+};
 
 const AREA_TAB = new Map(INSIGHT_SOURCES.map((s) => [s[2], s[1]]));
-
-const STATUS_TOTAL = "Total";
-
-const STATUS_STATION = "Station";
 
 function showSummary(panel, on) {
   const summary = panel && panel._wxSummary;
@@ -4994,239 +4963,169 @@ function showSummary(panel, on) {
   const visible = summary.style.display !== "none";
   if (visible === on) return;
   summary.style.display = on ? "" : "none";
-  if (on) requestAnimationFrame(sizeOverviewShell);
+  if (!on) return;
+  requestAnimationFrame(() => {
+    const g = findGraphWrap(summary);
+    if (g && typeof g._wxResize === "function") g._wxResize();
+    sizeOverviewShell();
+  });
 }
 
-function hexRgb(hex) {
-  const v = parseInt(hex.slice(1), 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-
-function statusColor(t) {
-  const x = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < STATUS_SCALE.length; i++) {
-    const [p1, c1] = STATUS_SCALE[i];
-    if (x > p1 && i < STATUS_SCALE.length - 1) continue;
-    const [p0, c0] = STATUS_SCALE[i - 1];
-    const f = p1 > p0 ? (x - p0) / (p1 - p0) : 0;
-    const a = hexRgb(c0);
-    const b = hexRgb(c1);
-    const rgb = a.map((v, k) => Math.round(v + (b[k] - v) * Math.max(0, Math.min(1, f))));
-    return { css: "rgb(" + rgb.join(",") + ")", dark: 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 140 };
-  }
-  return { css: STATUS_SCALE[0][1], dark: false };
-}
-
-function statusLevel(sev) {
-  const t = (sev - STATUS_SEV_MIN) / (STATUS_SEV_MAX - STATUS_SEV_MIN);
-  return STATUS_FLOOR + (1 - STATUS_FLOOR) * Math.max(0, Math.min(1, t));
-}
-
-function statusRows(findings) {
+function summaryStations(findings) {
   const byStation = new Map();
   for (const f of findings) {
     if (!f.station) continue;
-    let r = byStation.get(f.station);
-    if (!r) {
-      r = { station: f.station, total: 0, top: 0, ongoing: false, cells: new Map() };
-      byStation.set(f.station, r);
+    let s = byStation.get(f.station);
+    if (!s) {
+      s = { station: f.station, total: 0, areas: new Map() };
+      byStation.set(f.station, s);
     }
     const area = String(f.area || "");
-    let c = r.cells.get(area);
-    if (!c) {
-      c = { count: 0, top: 0, ongoing: false, sections: new Map() };
-      r.cells.set(area, c);
+    let a = s.areas.get(area);
+    if (!a) {
+      a = { count: 0, sections: new Map() };
+      s.areas.set(area, a);
     }
-    const sev = ovSeverity(f);
-    c.count += 1;
-    c.top = Math.max(c.top, sev);
-    if (f.ongoing) c.ongoing = true;
+    a.count += 1;
     const sec = String(f.section || "Other");
-    c.sections.set(sec, (c.sections.get(sec) || 0) + 1);
-    r.total += 1;
-    r.top = Math.max(r.top, sev);
-    if (f.ongoing) r.ongoing = true;
+    a.sections.set(sec, (a.sections.get(sec) || 0) + 1);
+    s.total += 1;
   }
-  return Array.from(byStation.values());
-}
-
-function statusDefaultOrder(a, b) {
-  return (
-    b.top - a.top ||
-    b.total - a.total ||
-    a.station.localeCompare(b.station)
+  return Array.from(byStation.values()).sort(
+    (a, b) => b.total - a.total || a.station.localeCompare(b.station)
   );
 }
 
-function statusSorter(column) {
-  if (column === STATUS_STATION) return (a, b) => a.station.localeCompare(b.station);
-  if (column === STATUS_TOTAL) {
-    return (a, b) => b.total - a.total || statusDefaultOrder(a, b);
-  }
-  if (column) {
-    return (a, b) => {
-      const ca = a.cells.get(column);
-      const cb = b.cells.get(column);
-      const ta = ca ? ca.top : -1;
-      const tb = cb ? cb.top : -1;
-      return tb - ta || (cb ? cb.count : 0) - (ca ? ca.count : 0) || statusDefaultOrder(a, b);
-    };
-  }
-  return statusDefaultOrder;
-}
-
-function statusTipHtml(station, area, cell) {
-  const esc = (v) =>
-    String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
-  const head = "<b>" + esc(station) + "</b><br>" + esc(area) + ": ";
-  if (!cell) return head + "no alerts";
-  const lines = Array.from(cell.sections.entries())
+function summaryHover(station, area, entry, total) {
+  const lines = Array.from(entry.sections.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([sec, n]) => "\u2022 " + esc(sec) + (n > 1 ? " (" + n + ")" : ""));
+    .map(([sec, n]) => "\u2022 " + sec + (n > 1 ? " (" + n + ")" : ""));
   return (
-    head + cell.count + (cell.count === 1 ? " alert" : " alerts") +
-    (cell.ongoing ? ", ongoing" : "") + "<br>" + lines.join("<br>")
+    "<b>" + station + "</b> (" + total + " total)<br>" + area + ": " + entry.count +
+    (entry.count === 1 ? " alert" : " alerts") + "<br>" + lines.join("<br>")
   );
 }
 
-let _statusTip = null;
-
-function statusTip() {
-  if (_statusTip && _statusTip.isConnected) return _statusTip;
-  _statusTip = el("div", "wx-ov-tip");
-  document.body.appendChild(_statusTip);
-  return _statusTip;
-}
-
-function placeStatusTip(tip, target) {
-  const r = target.getBoundingClientRect();
-  const w = tip.offsetWidth;
-  const h = tip.offsetHeight;
-  const vw = window.innerWidth || 0;
-  const vh = window.innerHeight || 0;
-  let left = r.right + 8;
-  if (left + w > vw - 8) left = Math.max(8, r.left - w - 8);
-  let top = r.top + r.height / 2 - h / 2;
-  top = Math.max(8, Math.min(top, vh - h - 8));
-  tip.style.left = Math.round(left) + "px";
-  tip.style.top = Math.round(top) + "px";
-}
-
-function hideStatusTip() {
-  if (_statusTip) _statusTip.style.display = "none";
-}
-
-function statusCell(r, area, panel) {
-  const td = el("td", "wx-ov-cell");
-  const cell = r.cells.get(area);
-  if (cell) {
-    const col = statusColor(statusLevel(cell.top));
-    td.style.background = col.css;
-    if (col.dark) td.classList.add("dark");
-    if (cell.ongoing) td.classList.add("live");
-    td.classList.add("hit");
-    td.textContent = String(cell.count);
-    td.addEventListener("click", () => {
-      hideStatusTip();
-      openStationChart(panel, r.station, AREA_TAB.get(area) || null);
-    });
-  }
-  td.addEventListener("pointerenter", () => {
-    const tip = statusTip();
-    tip.innerHTML = statusTipHtml(r.station, area, cell);
-    tip.style.display = "block";
-    placeStatusTip(tip, td);
-    const tab = AREA_TAB.get(area);
-    if (cell && tab && tab !== DATA_TAB) prefetchDetail(r.station, tab);
+function summaryFigure(ranked) {
+  const stations = ranked.map((s) => s.station);
+  const areas = SUMMARY_AREAS.filter((a) => ranked.some((s) => s.areas.has(a)));
+  const data = areas.map((area) => {
+    const x = [];
+    const hover = [];
+    for (const s of ranked) {
+      const entry = s.areas.get(area);
+      x.push(entry ? entry.count : null);
+      hover.push(entry ? summaryHover(s.station, area, entry, s.total) : "");
+    }
+    return {
+      type: "bar",
+      orientation: "h",
+      name: area,
+      y: stations,
+      x: x,
+      customdata: hover,
+      hovertemplate: "%{customdata}<extra></extra>",
+      marker: { color: AREA_COLORS[area] || "#a8a29e", line: { width: 0 } },
+      meta: { area: area },
+    };
   });
-  td.addEventListener("pointerleave", () => {
-    hideStatusTip();
-    cancelPrefetch();
-  });
-  return td;
-}
-
-function statusLegend() {
-  const box = el("div", "wx-ov-status-legend");
-  const scale = el("span", "wx-ov-status-key");
-  scale.appendChild(ovText("span", null, "Lower"));
-  const ramp = el("span", "ramp");
-  const stops = STATUS_SCALE.filter((s) => s[0] >= STATUS_FLOOR)
-    .map((s) => s[1] + " " + Math.round(((s[0] - STATUS_FLOOR) / (1 - STATUS_FLOOR)) * 100) + "%");
-  ramp.style.background = "linear-gradient(90deg," + stops.join(",") + ")";
-  scale.appendChild(ramp);
-  scale.appendChild(ovText("span", null, "Higher severity"));
-  box.appendChild(scale);
-  const live = el("span", "wx-ov-status-key");
-  live.appendChild(el("span", "ring"));
-  live.appendChild(ovText("span", null, "Ongoing"));
-  box.appendChild(live);
-  return box;
+  const maxTotal = ranked.reduce((m, s) => Math.max(m, s.total), 0);
+  const height = Math.max(
+    SUMMARY_MIN_PX,
+    stations.length * SUMMARY_BAR_PX + SUMMARY_CHROME_PX
+  );
+  const layout = {
+    barmode: "stack",
+    bargap: 0.3,
+    height: height,
+    margin: { l: 10, r: 12, t: 24, b: 26 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: { size: 10, color: "#57534e" },
+    dragmode: false,
+    hovermode: "closest",
+    showlegend: true,
+    legend: {
+      orientation: "h",
+      x: 0,
+      xanchor: "left",
+      y: 1,
+      yanchor: "bottom",
+      bgcolor: "rgba(255,255,255,0)",
+      font: { size: 10, color: "#57534e" },
+      itemclick: false,
+      itemdoubleclick: false,
+    },
+    hoverlabel: {
+      bgcolor: DETAIL_HOVER_BG,
+      bordercolor: DETAIL_HOVER_BORDER,
+      font: { size: 11, color: DETAIL_HOVER_TEXT },
+      align: "left",
+    },
+    xaxis: {
+      fixedrange: true,
+      tickformat: "d",
+      dtick: maxTotal <= 10 ? 1 : null,
+      gridcolor: "#f1f0ee",
+      zeroline: false,
+      tickfont: { size: 9, color: "#8a857d" },
+    },
+    yaxis: {
+      fixedrange: true,
+      automargin: true,
+      type: "category",
+      categoryorder: "array",
+      categoryarray: stations,
+      autorange: "reversed",
+      ticksuffix: "  ",
+      tickfont: { size: 10, color: "#26231f" },
+    },
+  };
+  return { data: data, layout: layout, height: height };
 }
 
 function overviewSummary(findings, panel) {
-  const rows = statusRows(findings);
-  if (!rows.length) return null;
-  ensureOverviewStyles();
+  const all = summaryStations(findings);
+  if (!all.length) return null;
+  const ranked = all.slice(0, SUMMARY_TOP_N);
+  const fig = summaryFigure(ranked);
 
   const card = el("div", "wx-ov-summary");
   const head = el("div", "wx-ov-summary-head");
-  head.appendChild(ovText("div", "wx-ov-summary-title", "Alerts by station and sensor"));
-  head.appendChild(statusLegend());
+  head.appendChild(ovText("div", "wx-ov-summary-title", "Alerts by station"));
+  if (all.length > ranked.length) {
+    head.appendChild(
+      ovText("div", "wx-ov-summary-note", "Top " + ranked.length + " of " + all.length + " stations")
+    );
+  }
   card.appendChild(head);
 
-  const scroll = el("div", "wx-ov-status-wrap");
-  const table = el("table", "wx-ov-status");
-  const thead = el("thead");
-  const headRow = el("tr");
-  const tbody = el("tbody");
-  const columns = [STATUS_STATION].concat(STATUS_AREAS, [STATUS_TOTAL]);
-  const heads = new Map();
-  let sortBy = null;
+  const g = graph({ data: fig.data, layout: fig.layout }, { height: fig.height, noModeBar: true });
+  card.appendChild(g);
+  panel._wxSummary = card;
 
-  const trs = new Map();
-  for (const r of rows) {
-    const tr = el("tr");
-    tr.appendChild(ovText("td", "wx-ov-status-name", r.station));
-    for (const area of STATUS_AREAS) tr.appendChild(statusCell(r, area, panel));
-    tr.appendChild(ovText("td", "wx-ov-status-total", r.total));
-    trs.set(r.station, tr);
-  }
-
-  const apply = () => {
-    for (const [name, th] of heads) {
-      const mark = th.querySelector(".a");
-      if (mark) mark.remove();
-      if (name === sortBy) th.appendChild(ovText("span", "a", "\u2193"));
-    }
-    for (const r of rows.slice().sort(statusSorter(sortBy))) tbody.appendChild(trs.get(r.station));
-    scroll.scrollTop = 0;
+  const pointInfo = (ev) => {
+    const pt = ev && ev.points && ev.points[0];
+    if (!pt || pt.x === null || pt.x === undefined) return null;
+    const trace = pt.data || {};
+    const area = trace.meta && trace.meta.area ? trace.meta.area : trace.name;
+    return { station: String(pt.y), tab: AREA_TAB.get(area) || null };
   };
 
-  for (const name of columns) {
-    const th = ovText("th", name === STATUS_STATION ? "l" : null, name);
-    th.title = name === STATUS_STATION
-      ? "Sort by station name"
-      : name === STATUS_TOTAL
-        ? "Sort by number of alerts"
-        : "Sort by " + name + " severity";
-    th.addEventListener("click", () => {
-      sortBy = sortBy === name ? null : name;
-      apply();
+  g._wxOnDrawn(() => {
+    const pd = g._wxPlotDiv;
+    if (!pd || typeof pd.on !== "function") return;
+    pd.on("plotly_click", (ev) => {
+      const hit = pointInfo(ev);
+      if (hit) openStationChart(panel, hit.station, hit.tab);
     });
-    heads.set(name, th);
-    headRow.appendChild(th);
-  }
+    pd.on("plotly_hover", (ev) => {
+      const hit = pointInfo(ev);
+      if (hit && hit.tab && hit.tab !== DATA_TAB) prefetchDetail(hit.station, hit.tab);
+    });
+    pd.on("plotly_unhover", cancelPrefetch);
+  });
 
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-  table.appendChild(tbody);
-  scroll.appendChild(table);
-  scroll.addEventListener("scroll", hideStatusTip, { passive: true });
-  card.appendChild(scroll);
-  apply();
-
-  panel._wxSummary = card;
   return card;
 }
 
