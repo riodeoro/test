@@ -4132,7 +4132,14 @@ function ensureOverviewStyles() {
     ".wx-ov-type{font-size:10px;letter-spacing:.03em;color:#a9a49c;}",
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
+    ".wx-ov-summary{flex:0 0 auto;background:var(--surface);overflow:hidden;",
+    "border:1px solid var(--line);border-radius:10px;padding:10px 12px 4px;",
+    "box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:10px;}",
+    ".wx-ov-summary-title{font-size:10px;font-weight:600;letter-spacing:.06em;",
+    "text-transform:uppercase;color:var(--text-muted);}",
+    ".wx-ov-summary .nsewdrag{cursor:pointer;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
+    ".wx-ov-summary{padding:8px 8px 2px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
   document.head.appendChild(st);
@@ -4244,6 +4251,7 @@ function closeOverviewChart(panel) {
   resetOverviewChart(panel);
   panel.style.display = "none";
   panel.style.height = "";
+  showSummary(panel, true);
   const grid = panel._wxGrid;
   if (!grid) return;
   if (typeof grid._wxClearFilter === "function" && grid._wxClearFilter()) return;
@@ -4340,6 +4348,7 @@ function openOverviewChart(panel, f, row) {
   ensureDetailStyles();
   const wasOpen = panel.style.display !== "none";
   resetOverviewChart(panel);
+  showSummary(panel, false);
   panel.style.display = "";
   panel._wxRow = row || null;
   panel._wxStation = f.station || null;
@@ -4924,6 +4933,192 @@ function overviewTable(findings, panel, columns, onPick) {
   return wrap;
 }
 
+const SUMMARY_TOP_N = 15;
+
+const SUMMARY_BAR_PX = 22;
+
+const SUMMARY_CHROME_PX = 70;
+
+const SUMMARY_MIN_PX = 150;
+
+const AREA_COLORS = {
+  Data: "#94a3b8",
+  RH: "#2f6f9e",
+  Wind: "#3f8f45",
+  Temp: "#ea580c",
+  Precip: "#0891b2",
+  Power: "#7c3aed",
+};
+
+const AREA_TAB = new Map(INSIGHT_SOURCES.map((s) => [s[2], s[1]]));
+
+function showSummary(panel, on) {
+  const summary = panel && panel._wxSummary;
+  if (!summary) return;
+  const visible = summary.style.display !== "none";
+  if (visible === on) return;
+  summary.style.display = on ? "" : "none";
+  if (!on) return;
+  requestAnimationFrame(() => {
+    const g = findGraphWrap(summary);
+    if (g && typeof g._wxResize === "function") g._wxResize();
+    sizeOverviewShell();
+  });
+}
+
+function summaryStations(findings) {
+  const byStation = new Map();
+  for (const f of findings) {
+    if (!f.station) continue;
+    let s = byStation.get(f.station);
+    if (!s) {
+      s = { station: f.station, total: 0, top: 0, areas: new Map() };
+      byStation.set(f.station, s);
+    }
+    const area = String(f.area || "");
+    let a = s.areas.get(area);
+    if (!a) {
+      a = { count: 0, sections: new Map() };
+      s.areas.set(area, a);
+    }
+    a.count += 1;
+    const sec = String(f.section || "Other");
+    a.sections.set(sec, (a.sections.get(sec) || 0) + 1);
+    s.total += 1;
+    s.top = Math.max(s.top, ovSeverity(f));
+  }
+  return Array.from(byStation.values()).sort(
+    (a, b) => b.total - a.total || b.top - a.top || a.station.localeCompare(b.station)
+  );
+}
+
+function summaryHover(station, area, entry) {
+  const lines = Array.from(entry.sections.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([sec, n]) => "\u2022 " + sec + (n > 1 ? " (" + n + ")" : ""));
+  return (
+    "<b>" + station + "</b><br>" + area + ": " + entry.count +
+    (entry.count === 1 ? " alert" : " alerts") + "<br>" + lines.join("<br>")
+  );
+}
+
+function summaryFigure(ranked) {
+  const stations = ranked.map((s) => s.station);
+  const areas = INSIGHT_SOURCES.map((s) => s[2]).filter((a) =>
+    ranked.some((s) => s.areas.has(a))
+  );
+  const data = areas.map((area) => {
+    const x = [];
+    const hover = [];
+    for (const s of ranked) {
+      const entry = s.areas.get(area);
+      x.push(entry ? entry.count : null);
+      hover.push(entry ? summaryHover(s.station, area, entry) : "");
+    }
+    return {
+      type: "bar",
+      orientation: "h",
+      name: area,
+      y: stations,
+      x: x,
+      customdata: hover,
+      hovertemplate: "%{customdata}<extra></extra>",
+      marker: { color: AREA_COLORS[area] || "#a8a29e", line: { width: 0 } },
+      meta: { area: area },
+    };
+  });
+  const maxTotal = ranked.reduce((m, s) => Math.max(m, s.total), 0);
+  const height = Math.max(
+    SUMMARY_MIN_PX,
+    stations.length * SUMMARY_BAR_PX + SUMMARY_CHROME_PX
+  );
+  const layout = {
+    barmode: "stack",
+    bargap: 0.28,
+    height: height,
+    margin: { l: 10, r: 16, t: 28, b: 30 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: { family: "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Arial, sans-serif", size: 10, color: "#57534e" },
+    dragmode: false,
+    hovermode: "closest",
+    showlegend: true,
+    legend: {
+      orientation: "h",
+      x: 0,
+      xanchor: "left",
+      y: 1,
+      yanchor: "bottom",
+      font: { size: 10 },
+      itemclick: false,
+      itemdoubleclick: false,
+    },
+    hoverlabel: { bgcolor: "#ffffff", bordercolor: "#e8e6e3", font: { size: 11, color: "#26231f" }, align: "left" },
+    xaxis: {
+      fixedrange: true,
+      tickformat: "d",
+      dtick: maxTotal <= 10 ? 1 : null,
+      gridcolor: "#f0eeeb",
+      zeroline: false,
+      title: { text: "Alerts", font: { size: 10 } },
+    },
+    yaxis: {
+      fixedrange: true,
+      automargin: true,
+      type: "category",
+      categoryorder: "array",
+      categoryarray: stations,
+      autorange: "reversed",
+      tickfont: { size: 10, color: "#26231f" },
+    },
+  };
+  return { data: data, layout: layout, height: height };
+}
+
+function overviewSummary(findings, panel) {
+  const all = summaryStations(findings);
+  if (!all.length) return null;
+  const ranked = all.slice(0, SUMMARY_TOP_N);
+  const fig = summaryFigure(ranked);
+
+  const card = el("div", "wx-ov-summary");
+  const title = el("div", "wx-ov-summary-title");
+  title.textContent =
+    all.length > ranked.length
+      ? "Alerts by station \u2014 top " + ranked.length + " of " + all.length
+      : "Alerts by station";
+  card.appendChild(title);
+
+  const g = graph({ data: fig.data, layout: fig.layout }, { height: fig.height, noModeBar: true });
+  card.appendChild(g);
+  panel._wxSummary = card;
+
+  const pointInfo = (ev) => {
+    const pt = ev && ev.points && ev.points[0];
+    if (!pt || pt.x === null || pt.x === undefined) return null;
+    const trace = pt.data || {};
+    const area = trace.meta && trace.meta.area ? trace.meta.area : trace.name;
+    return { station: String(pt.y), tab: AREA_TAB.get(area) || null };
+  };
+
+  g._wxOnDrawn(() => {
+    const pd = g._wxPlotDiv;
+    if (!pd || typeof pd.on !== "function") return;
+    pd.on("plotly_click", (ev) => {
+      const hit = pointInfo(ev);
+      if (!hit) return;
+      openStationChart(panel, hit.station, hit.tab);
+    });
+    pd.on("plotly_hover", (ev) => {
+      const hit = pointInfo(ev);
+      if (hit && hit.tab && hit.tab !== DATA_TAB) prefetchDetail(hit.station, hit.tab);
+    });
+    pd.on("plotly_unhover", cancelPrefetch);
+  });
+
+  return card;
+}
+
 const OVERVIEW_SHELL_GAP = 8;
 
 function overviewReserve(shell) {
@@ -4996,6 +5191,8 @@ async function buildOverview(fc, hours) {
 
   const shell = el("div", "wx-ov-shell");
   const panel = chartPanel();
+  const summary = overviewSummary(findings, panel);
+  if (summary) shell.appendChild(summary);
   shell.appendChild(panel);
   shell.appendChild(overviewTable(findings, panel, OVERVIEW_COLUMNS));
   box.appendChild(shell);
