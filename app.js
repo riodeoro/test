@@ -3859,8 +3859,7 @@ const SEV_RE = {
   share: /up to\s+(\d+(?:\.\d+)?)\s*%/i,
   rainMm: /Rn_1\s*\((-?\d+(?:\.\d+)?)\s*mm\)/i,
   forHours: /for\s+(\d+(?:\.\d+)?)\s*h\b/i,
-  calmLongest: /longest\s+(\d+(?:\.\d+)?)\s*h\b/i,
-  calmDays: /calm on\s+(\d+)\s+day/i,
+  lowWspdTotal: /(\d+)h total\b/i,
   silentHours: /silent\s+(\d+(?:\.\d+)?)\s*h\s+straight/i,
   neighbourZero: /(\d+)\s+of\s+(\d+)\s+neighbour/i,
   silentZero: /silent\s+(\d+)\s+of\s+(\d+)\s+neighbour/i,
@@ -3899,9 +3898,9 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.hours },
     mag: { re: SEV_RE.rainMm },
   }],
-  ["Wind", "DAYTIME CALM (WSPD <1 KM/H)", 10, {
-    dur: { re: SEV_RE.calmLongest },
-    freq: { re: SEV_RE.calmDays },
+  ["Wind", "DAYTIME LOW WSPD SPAN (<1 KM/H)", 10, {
+    dur: { re: SEV_RE.lowWspdTotal },
+    noOngoing: true,
   }],
   ["RH", "RH CHANGED \u226520%/H, DECOUPLED FROM TEMPERATURE AND WIND", 11, {
     freq: { re: SEV_RE.shifts },
@@ -4077,7 +4076,8 @@ function applySeverity(findings) {
     score += SEVERITY_DURATION_WEIGHT * severityUnit(m.dur, g.dur);
     score += SEVERITY_MAGNITUDE_WEIGHT * severityUnit(m.mag, g.mag);
     score += SEVERITY_FREQUENCY_WEIGHT * severityUnit(m.freq, g.freq);
-    if (f.ongoing) score += SEVERITY_ONGOING_BONUS;
+    const rules = SEVERITY_RULES.get(severityKey(f.area, f.section)) || {};
+    if (f.ongoing && !rules.noOngoing) score += SEVERITY_ONGOING_BONUS;
     if (m.dry) score += SEVERITY_DRY_PERSIST_BONUS;
     f.severity = score;
   }
