@@ -3898,7 +3898,7 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.hours },
     mag: { re: SEV_RE.rainMm },
   }],
-  ["Wind", "DAYTIME LOW WSPD SPAN (<1 KM/H)", 10, {
+  ["Wind", "LOW WSPD SPANS (<1 KM/H, \u22656 CONSECUTIVE DAYTIME HOURS)", 10, {
     dur: { re: SEV_RE.lowWspdTotal },
     noOngoing: true,
   }],
