@@ -3859,6 +3859,8 @@ const SEV_RE = {
   share: /up to\s+(\d+(?:\.\d+)?)\s*%/i,
   rainMm: /Rn_1\s*\((-?\d+(?:\.\d+)?)\s*mm\)/i,
   forHours: /for\s+(\d+(?:\.\d+)?)\s*h\b/i,
+  leadDays: /^(\d+)\s+days?\b/i,
+  peakPct: /peak\s+(\d+(?:\.\d+)?)\s*%/i,
   silentHours: /silent\s+(\d+(?:\.\d+)?)\s*h\s+straight/i,
   neighbourZero: /(\d+)\s+of\s+(\d+)\s+neighbour/i,
   silentZero: /silent\s+(\d+)\s+of\s+(\d+)\s+neighbour/i,
@@ -3897,9 +3899,9 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.hours },
     mag: { re: SEV_RE.rainMm },
   }],
-  ["Wind", "LOW WSPD DAYS (<1 KM/H FOR \u226575% OF DAYTIME HOURS)", 10, {
-    mag: { re: SEV_RE.share },
-    freq: { re: SEV_RE.parenDays },
+  ["Wind", "LOW WSPD DAYS (<1 KM/H FOR \u226575% OF DAY)", 10, {
+    freq: { re: SEV_RE.leadDays },
+    mag: { re: SEV_RE.peakPct },
   }],
   ["RH", "RH CHANGED \u226520%/H, DECOUPLED FROM TEMPERATURE AND WIND", 11, {
     freq: { re: SEV_RE.shifts },
