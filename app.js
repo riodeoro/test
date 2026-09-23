@@ -1478,7 +1478,9 @@ function fitRowAxis(pd) {
   if (pd._wxRowFit === key) return;
   pd._wxRowFit = key;
 
-  const slots = Math.max(n, len / FIT_ROW_MAX_PX);
+  const meta = pd.layout && pd.layout.meta;
+  const capPx = meta && Number(meta.row_max_px) > 0 ? Number(meta.row_max_px) : FIT_ROW_MAX_PX;
+  const slots = Math.max(n, len / capPx);
   const pad = (slots - n) / 2;
   const lo = -0.5 - pad;
   const hi = n - 0.5 + pad;
