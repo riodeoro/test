@@ -3844,7 +3844,6 @@ const SEV_RE = {
   hours: /^(\d+)\s+hour/i,
   uncorrelated: /^(\d+)\s+uncorrelated/i,
   parenReadings: /\((\d+)\s+reading/i,
-  parenDays: /\((\d+)\s+day/i,
   pctOfDays: /\((\d+(?:\.\d+)?)\s*%\s+of\s+days/i,
   rhMax: /max\s+(-?\d+(?:\.\d+)?)\s*%/i,
   rhPeak: /peak\s+\u0394\s*([+-]?\d+(?:\.\d+)?)\s*%\/h/i,
@@ -3856,7 +3855,6 @@ const SEV_RE = {
   leadTemp: /^(-?\d+(?:\.\d+)?)\s*\u00b0C/i,
   parenTemp: /\((-?\d+(?:\.\d+)?)\s*\u00b0C\)/i,
   ratio: /(\d+(?:\.\d+)?)\s*\u00d7\s*typical/i,
-  share: /up to\s+(\d+(?:\.\d+)?)\s*%/i,
   rainMm: /Rn_1\s*\((-?\d+(?:\.\d+)?)\s*mm\)/i,
   forHours: /for\s+(\d+(?:\.\d+)?)\s*h\b/i,
   silentHours: /silent\s+(\d+(?:\.\d+)?)\s*h\s+straight/i,
@@ -3919,8 +3917,8 @@ const SEVERITY_CATEGORIES = [
   }],
   ["Temp", "PERSISTENT STATES", 15, { dur: { re: SEV_RE.forHours } }],
   ["Wind", "DAILY DIRECTION CONCENTRATION", 16, {
-    mag: { re: SEV_RE.share },
-    freq: { re: SEV_RE.parenDays },
+    noOngoing: true,
+    noSpan: true,
   }],
   ["Wind", "DIRECTION BIAS OVER 14-DAY WINDOW", 17, {
     mag: { re: SEV_RE.ratio },
