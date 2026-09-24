@@ -3895,7 +3895,7 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.hours },
     mag: { re: SEV_RE.rainMm },
   }],
-  ["Wind", "LOW WSPD DAYS (<1 KM/H FOR \u226575% OF DAY)", 10, {
+  ["Wind", "LOW WSPD DAYS (<1 KM/H FOR \u226590% OF DAY)", 10, {
     noOngoing: true,
     noSpan: true,
   }],
