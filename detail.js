@@ -9,6 +9,15 @@ import {
 } from "./data.js";
 import { ready } from "./duck.js";
 import { buildStationDetail, isoStamp } from "./charts.js";
+import {
+  RAIN_COL,
+  loadNormals,
+  supports,
+  anySupported,
+  cumulativeSeries,
+  remapAlerts,
+  applyNormals,
+} from "./normals.js";
 
 const ATTR_TAB = {
   Rh: "rh",
@@ -40,6 +49,8 @@ const PLOT_CONFIG = {
 };
 
 const MOBILE = () => window.matchMedia("(max-width: 768px)").matches;
+
+let _normalsOn = false;
 
 let _configPromise = null;
 let _config = null;
@@ -428,6 +439,7 @@ function boundsReady(opts) {
 export function prefetch(opts) {
   if (!opts || !opts.station) return;
   warmEngine();
+  loadNormals(opts.station);
   for (const c of PLOT_PREF[opts.tab] || []) {
     if (chartReady(opts, ATTR_TAB[c])) alertsFor(opts, c);
   }
@@ -524,6 +536,7 @@ export async function mount(host, opts) {
   if (!body) return;
 
   primeAlerts(opts);
+  loadNormals(opts.station);
 
   let payload;
   try {
@@ -590,6 +603,28 @@ export async function mount(host, opts) {
   const selPrimary = mkSelect("Attribute", primary, false);
   const selSecondary = mkSelect("Compare with", secondary, true);
 
+  const normalsWrap = node("div", "wx-detail-control");
+  normalsWrap.appendChild(node("label", null, "Past years"));
+  const selNormals = document.createElement("select");
+  selNormals.className = "wx-detail-select";
+  for (const [value, text] of [["", "None"], ["past", "Show"]]) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    selNormals.appendChild(o);
+  }
+  selNormals.disabled = true;
+  normalsWrap.appendChild(selNormals);
+  controls.appendChild(normalsWrap);
+
+  let normals = null;
+
+  const updateNormalsControl = () => {
+    const avail = anySupported(normals, [primary, secondary]);
+    selNormals.disabled = !avail;
+    selNormals.value = avail && _normalsOn ? "past" : "";
+  };
+
   const plot = node("div", "wx-detail-plot");
   plot.style.width = "100%";
 
@@ -630,14 +665,31 @@ export async function mount(host, opts) {
 
   const draw = () => {
     if (!plot.isConnected) return;
+    const on = _normalsOn && !!normals;
+    const rainPrimary = on && primary === RAIN_COL && supports(normals, RAIN_COL);
+    const rainSecondary = on && secondary === RAIN_COL && supports(normals, RAIN_COL);
+    let series = payload.series;
+    let aPrimary = alertsPrimary;
+    let aSecondary = alertsSecondary;
+    if (rainPrimary || rainSecondary) {
+      series = cumulativeSeries(series, RAIN_COL);
+      if (rainPrimary) aPrimary = remapAlerts(aPrimary, series, RAIN_COL);
+      if (rainSecondary) aSecondary = remapAlerts(aSecondary, series, RAIN_COL);
+    }
     const fig = buildStationDetail(
-      payload.series,
+      series,
       primary,
       secondary || null,
-      alertsPrimary,
-      alertsSecondary,
+      aPrimary,
+      aSecondary,
       showAlerts
     );
+    if (on) {
+      applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs);
+      if (secondary && fig.layout && fig.layout.yaxis2) {
+        applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs);
+      }
+    }
     focusWindow(
       fig,
       payload.startMs,
@@ -676,6 +728,18 @@ export async function mount(host, opts) {
     draw();
   };
 
+  loadNormals(payload.name).then((n) => {
+    normals = n;
+    if (!plot.isConnected) return;
+    updateNormalsControl();
+    if (_normalsOn && anySupported(n, [primary, secondary])) draw();
+  });
+
+  selNormals.addEventListener("change", () => {
+    _normalsOn = selNormals.value === "past";
+    draw();
+  });
+
   await syncAlerts(true);
   if (!plot.isConnected) return;
 
@@ -688,6 +752,7 @@ export async function mount(host, opts) {
       secondary = "Wspd";
       selPrimary.value = primary;
       selSecondary.value = secondary;
+      updateNormalsControl();
       syncAlerts(true);
     });
   }
@@ -699,6 +764,7 @@ export async function mount(host, opts) {
       secondary = "";
       selSecondary.value = "";
     }
+    updateNormalsControl();
     syncAlerts(true);
   });
   selSecondary.addEventListener("change", () => {
@@ -708,6 +774,7 @@ export async function mount(host, opts) {
       secondary = null;
       selSecondary.value = "";
     }
+    updateNormalsControl();
     syncAlerts(true);
   });
 
