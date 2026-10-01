@@ -50,6 +50,10 @@ const PLOT_CONFIG = {
 
 const MOBILE = () => window.matchMedia("(max-width: 768px)").matches;
 
+const CHECK_SVG =
+  '<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">' +
+  '<path d="M2.4 6.3 4.8 8.7 9.6 3.5"/></svg>';
+
 let _normalsOn = false;
 
 let _configPromise = null;
@@ -603,27 +607,33 @@ export async function mount(host, opts) {
   const selPrimary = mkSelect("Attribute", primary, false);
   const selSecondary = mkSelect("Compare with", secondary, true);
 
-  const normalsWrap = node("div", "wx-detail-control");
-  normalsWrap.appendChild(node("label", null, "Past years"));
-  const selNormals = document.createElement("select");
-  selNormals.className = "wx-detail-select";
-  for (const [value, text] of [["", "None"], ["past", "Show"]]) {
-    const o = document.createElement("option");
-    o.value = value;
-    o.textContent = text;
-    selNormals.appendChild(o);
+  if (typeof window.ensureGridToggleStyles === "function") {
+    window.ensureGridToggleStyles();
   }
-  selNormals.disabled = true;
-  normalsWrap.appendChild(selNormals);
+  const normalsWrap = node("div", "wx-detail-control");
+  normalsWrap.style.justifyContent = "flex-end";
+  normalsWrap.style.minWidth = "0";
+  const normalsBtn = document.createElement("button");
+  normalsBtn.type = "button";
+  const normalsBox = node("span", "box");
+  normalsBox.innerHTML = CHECK_SVG;
+  normalsBtn.appendChild(normalsBox);
+  normalsBtn.appendChild(node("span", null, "Past years"));
+  normalsWrap.appendChild(normalsBtn);
   controls.appendChild(normalsWrap);
 
   let normals = null;
 
   const updateNormalsControl = () => {
     const avail = anySupported(normals, [primary, secondary]);
-    selNormals.disabled = !avail;
-    selNormals.value = avail && _normalsOn ? "past" : "";
+    const on = avail && _normalsOn;
+    normalsBtn.disabled = !avail;
+    normalsBtn.className = "wx-grid-mode show" + (on ? " on" : "");
+    normalsBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    normalsBtn.style.opacity = avail ? "" : "0.4";
+    normalsBtn.style.cursor = avail ? "" : "default";
   };
+  updateNormalsControl();
 
   const plot = node("div", "wx-detail-plot");
   plot.style.width = "100%";
@@ -735,8 +745,10 @@ export async function mount(host, opts) {
     if (_normalsOn && anySupported(n, [primary, secondary])) draw();
   });
 
-  selNormals.addEventListener("change", () => {
-    _normalsOn = selNormals.value === "past";
+  normalsBtn.addEventListener("click", () => {
+    if (normalsBtn.disabled) return;
+    _normalsOn = !_normalsOn;
+    updateNormalsControl();
     draw();
   });
 
