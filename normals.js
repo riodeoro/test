@@ -1,5 +1,5 @@
 import { R2_BASE } from "./config.js";
-import { safeName } from "./data.js";
+import { safeName, disp } from "./data.js";
 import { isoStamp } from "./charts.js";
 
 export const NORMALS_PREFIX = "normals";
@@ -7,7 +7,7 @@ export const RAIN_COL = "Rn_1";
 export const MIN_YEARS = 3;
 export const HOURLY_MAX_HOURS = 336;
 
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const CACHE_MAX = 16;
 const HOUR_MS = 3600 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -16,11 +16,25 @@ const RAIN_MAX_MISSING = 0.2;
 const FEB29 = 60;
 const CUM_DAYS = [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
 
-const BAND_FILL = "rgba(37, 99, 235, 0.13)";
-const MEDIAN_COLOR = "rgba(37, 99, 235, 0.80)";
-const RECORD_COLOR = "rgba(37, 99, 235, 0.50)";
+const BAND_FILLS = [
+  "rgba(229, 231, 235, 0.5)",
+  "rgba(191, 219, 254, 0.5)",
+  "rgba(209, 250, 229, 0.5)",
+  "rgba(254, 249, 195, 0.5)",
+  "rgba(253, 230, 138, 0.5)",
+  "rgba(252, 165, 165, 0.5)",
+];
+const INVERTED = new Set(["Rh", "Rn_1", "SM1", "SM2", "SM3"]);
+const LINE_ON_BANDS = "#26231f";
 
-const STAT = { p10: 0, p50: 1, p90: 2, lo: 3, hi: 4 };
+const STAT = { lo: 0, p10: 1, p25: 2, p50: 3, p75: 4, p90: 5, hi: 6 };
+const EDGES = ["lo", "p10", "p25", "p50", "p75", "p90", "hi"];
+
+function emptyBand() {
+  const out = { x: [] };
+  for (const k of EDGES) out[k] = [];
+  return out;
+}
 
 const _cache = new Map();
 
@@ -99,7 +113,7 @@ function hourlyIndex(centres, ms) {
 }
 
 function hourlyBand(attr, centres, startMs, endMs) {
-  const out = { x: [], p10: [], p50: [], p90: [], lo: [], hi: [] };
+  const out = emptyBand();
   let t = Math.ceil(startMs / HOUR_MS) * HOUR_MS;
   const step = Math.max(HOUR_MS, Math.ceil((endMs - t) / MAX_POINTS / HOUR_MS) * HOUR_MS);
   for (; t <= endMs; t += step) {
@@ -115,7 +129,7 @@ function hourlyBand(attr, centres, startMs, endMs) {
 }
 
 function dailyBand(attr, startMs, endMs) {
-  const out = { x: [], p10: [], p50: [], p90: [], lo: [], hi: [] };
+  const out = emptyBand();
   const first = Math.floor(startMs / DAY_MS) * DAY_MS;
   for (let d = first; d <= endMs; d += DAY_MS) {
     const i = doy366(d) - 1;
@@ -187,13 +201,16 @@ export function rainBandFor(normals, startMs, endMs) {
   }
   if (used.length < MIN_YEARS) return null;
 
-  const out = { x: [startMs].concat(segments.map((s) => s.end)), p10: [], p50: [], p90: [], lo: [], hi: [] };
+  const out = emptyBand();
+  out.x = [startMs].concat(segments.map((s) => s.end));
   for (let j = 0; j < out.x.length; j++) {
     const vals = curves.map((c) => c[j]).sort((a, b) => a - b);
-    out.p10.push(quantile(vals, 0.1));
-    out.p50.push(quantile(vals, 0.5));
-    out.p90.push(quantile(vals, 0.9));
     out.lo.push(vals[0]);
+    out.p10.push(quantile(vals, 0.1));
+    out.p25.push(quantile(vals, 0.25));
+    out.p50.push(quantile(vals, 0.5));
+    out.p75.push(quantile(vals, 0.75));
+    out.p90.push(quantile(vals, 0.9));
     out.hi.push(vals[vals.length - 1]);
   }
   out.kind = "rain";
@@ -255,48 +272,50 @@ function fmt(v) {
   return v === null ? null : Math.round(v * 10) / 10;
 }
 
-function bandTraces(band, yaxis) {
+function bandTraces(band, yaxis, col) {
   const x = band.x.map(isoStamp);
-  const common = {
-    type: "scatter",
-    mode: "lines",
-    x,
-    xaxis: "x",
-    yaxis,
-    showlegend: false,
-    connectgaps: false,
-  };
-  return [
-    Object.assign({}, common, {
-      y: band.p10.map(fmt),
-      line: { width: 0 },
-      hoverinfo: "skip",
-    }),
-    Object.assign({}, common, {
-      y: band.p90.map(fmt),
-      fill: "tonexty",
-      fillcolor: BAND_FILL,
-      line: { width: 0 },
+  const fills = INVERTED.has(col) ? BAND_FILLS.slice().reverse() : BAND_FILLS;
+  const hover = {
+    p50: { hovertemplate: "Median: %{y:.1f}<extra></extra>" },
+    p90: {
       customdata: band.p10.map(fmt),
-      hovertemplate: "P10–P90: %{customdata:.1f} – %{y:.1f}<extra></extra>",
-    }),
-    Object.assign({}, common, {
-      y: band.p50.map(fmt),
-      line: { color: MEDIAN_COLOR, width: 1.3, dash: "dash" },
-      hovertemplate: "Median: %{y:.1f}<extra></extra>",
-    }),
-    Object.assign({}, common, {
-      y: band.hi.map(fmt),
-      line: { color: RECORD_COLOR, width: 1, dash: "dot" },
+      hovertemplate: "P10\u2013P90: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
+    },
+    hi: {
       customdata: band.lo.map(fmt),
-      hovertemplate: "Range: %{customdata:.1f} – %{y:.1f}<extra></extra>",
-    }),
-    Object.assign({}, common, {
-      y: band.lo.map(fmt),
-      line: { color: RECORD_COLOR, width: 1, dash: "dot" },
-      hoverinfo: "skip",
-    }),
-  ];
+      hovertemplate: "Range: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
+    },
+  };
+  return EDGES.map((edge, i) => {
+    const trace = {
+      type: "scatter",
+      mode: "lines",
+      x,
+      y: band[edge].map(fmt),
+      xaxis: "x",
+      yaxis,
+      showlegend: false,
+      connectgaps: false,
+      line: { width: 0 },
+    };
+    if (i > 0) {
+      trace.fill = "tonexty";
+      trace.fillcolor = fills[i - 1];
+    }
+    if (hover[edge]) Object.assign(trace, hover[edge]);
+    else trace.hoverinfo = "skip";
+    return trace;
+  });
+}
+
+function lineOnBands(fig, col, yaxis) {
+  const name = disp(col);
+  for (const tr of fig.data) {
+    if (!tr || (tr.yaxis || "y") !== yaxis || tr.name !== name) continue;
+    if (tr.fill) tr.fill = "none";
+    if (tr.line) tr.line = Object.assign({}, tr.line, { color: LINE_ON_BANDS });
+    if (tr.marker) tr.marker = Object.assign({}, tr.marker, { color: LINE_ON_BANDS });
+  }
 }
 
 export function applyNormals(fig, normals, col, yaxis, startMs, endMs) {
@@ -306,6 +325,7 @@ export function applyNormals(fig, normals, col, yaxis, startMs, endMs) {
     ? rainBandFor(normals, startMs, endMs)
     : bandFor(normals, col, startMs, endMs);
   if (!band) return false;
-  fig.data = bandTraces(band, yaxis).concat(fig.data);
+  fig.data = bandTraces(band, yaxis, col).concat(fig.data);
+  lineOnBands(fig, col, yaxis);
   return true;
 }
