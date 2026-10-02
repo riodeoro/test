@@ -57,7 +57,7 @@ const CHECK_SVG =
   '<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">' +
   '<path d="M2.4 6.3 4.8 8.7 9.6 3.5"/></svg>';
 
-let _normalsOn = true;
+let _normalsOn = false;
 
 const NORMALS_WAIT_MS = 120;
 
@@ -857,11 +857,13 @@ export async function mount(host, opts) {
     });
   });
 
-  await Promise.race([
-    normalsJob,
-    new Promise((resolve) => setTimeout(resolve, NORMALS_WAIT_MS)),
-  ]);
-  if (!plot.isConnected) return;
+  if (_normalsOn) {
+    await Promise.race([
+      normalsJob,
+      new Promise((resolve) => setTimeout(resolve, NORMALS_WAIT_MS)),
+    ]);
+    if (!plot.isConnected) return;
+  }
 
   await syncAlerts(true);
   if (!plot.isConnected) return;
