@@ -2683,18 +2683,116 @@ function detailColumnName(dpd) {
   return null;
 }
 
-function stackYRange(fig, placed, base) {
+const STAMP_MS_RE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2})(?::(\d{2})(?::(\d{2})(\.\d+)?)?)?)?/;
+
+function stampMs(v) {
+  if (typeof v === "number") return v;
+  if (v === null || v === undefined) return NaN;
+  const m = STAMP_MS_RE.exec(String(v));
+  if (!m) return NaN;
+  const ms = Date.UTC(
+    +m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)
+  );
+  return m[7] ? ms + Math.round(parseFloat(m[7]) * 1000) : ms;
+}
+
+function spanMs(range) {
+  if (!Array.isArray(range) || range.length !== 2) return null;
+  const a = stampMs(range[0]);
+  const b = stampMs(range[1]);
+  if (!isFinite(a) || !isFinite(b) || a === b) return null;
+  return a < b ? [a, b] : [b, a];
+}
+
+const _traceTimes = new WeakMap();
+
+function traceTimes(tr) {
+  const x = tr && tr.x;
+  if (!x || typeof x !== "object") return null;
+  if (_traceTimes.has(x)) return _traceTimes.get(x);
+  const src = decodeArray(x);
+  let out = null;
+  if (src && src.length) {
+    out = new Float64Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const t = stampMs(src[i]);
+      if (!isFinite(t) || (i && t < out[i - 1])) {
+        out = null;
+        break;
+      }
+      out[i] = t;
+    }
+  }
+  _traceTimes.set(x, out);
+  return out;
+}
+
+function edgeValue(t, y, k, x) {
+  if (k <= 0 || k >= y.length || y[k - 1] === null || y[k] === null) return NaN;
+  const a = Number(y[k - 1]);
+  const b = Number(y[k]);
+  const dt = t[k] - t[k - 1];
+  return dt > 0 ? a + ((b - a) * (x - t[k - 1])) / dt : b;
+}
+
+function sameRange(a, b) {
+  if (!a || !b) return false;
+  const a0 = Number(a[0]);
+  const a1 = Number(a[1]);
+  const b0 = Number(b[0]);
+  const b1 = Number(b[1]);
+  if (!isFinite(a0) || !isFinite(a1) || !isFinite(b0) || !isFinite(b1)) return false;
+  const tol = (Math.abs(b1 - b0) || 1) * 1e-6;
+  return Math.abs(a0 - b0) < tol && Math.abs(a1 - b1) < tol;
+}
+
+function detailFit(dpd, view) {
+  if (!dpd) return null;
+  if (typeof dpd._wxFitY === "function") {
+    const own = dpd._wxFitY(view);
+    if (own) return own;
+  }
+  return axisRange(dpd._fullLayout, "yaxis");
+}
+
+function stackYRange(fig, placed, base, view) {
   let lo = Infinity;
   let hi = -Infinity;
   for (const tr of (fig && fig.data) || []) {
     if (!placed.has(tr.xaxis || "x") || isAlertTrace(tr)) continue;
     const y = decodeArray(tr.y) || (Array.isArray(tr.y) ? tr.y : null);
     if (!y) continue;
-    for (let i = 0; i < y.length; i++) {
+    const times = view ? traceTimes(tr) : null;
+    const t = times && times.length === y.length ? times : null;
+    let i = 0;
+    if (t) {
+      let b = y.length;
+      while (i < b) {
+        const m = (i + b) >> 1;
+        if (t[m] < view[0]) i = m + 1;
+        else b = m;
+      }
+    }
+    const first = i;
+    for (; i < y.length; i++) {
+      if (t && t[i] > view[1]) break;
+      if (y[i] === null) continue;
       const v = Number(y[i]);
       if (!isFinite(v)) continue;
       if (v < lo) lo = v;
       if (v > hi) hi = v;
+    }
+    if (!t) continue;
+    const head = edgeValue(t, y, first, view[0]);
+    const tail = edgeValue(t, y, i, view[1]);
+    if (isFinite(head)) {
+      if (head < lo) lo = head;
+      if (head > hi) hi = head;
+    }
+    if (isFinite(tail)) {
+      if (tail < lo) lo = tail;
+      if (tail > hi) hi = tail;
     }
   }
   if (hi >= lo) {
@@ -2919,6 +3017,7 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
   }
 
   let anchorKey = null;
+  let span = null;
   for (const list of groups) {
     list.sort((a, b) => placed.get(b.id).y1 - placed.get(a.id).y1);
     const anchor = list[0];
@@ -2935,6 +3034,7 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
       }
     }
     if (!r) continue;
+    span = r;
     for (const cell of list) {
       const ax = layout[cell.xkey];
       if (!ax) continue;
@@ -3048,12 +3148,18 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
     if (link && link.range && anchorKey && layout[anchorKey]) {
       layout[anchorKey].range = link.range.slice();
       layout[anchorKey].autorange = false;
+      span = link.range;
     }
   }
 
   let yRange = null;
   if (stack) {
-    yRange = stackYRange(fig, placed, link && link.yRange ? link.yRange : null);
+    yRange = stackYRange(
+      fig,
+      placed,
+      link && link.yRange ? link.yRange : null,
+      spanMs(span)
+    );
     if (yRange) {
       for (const cell of cells) {
         const ay = placed.has(cell.id) ? layout[cell.ykey] : null;
@@ -3068,7 +3174,12 @@ function buildGridFigure(fig, cells, fills, rowPx, selected, link, ranges, rank)
   layout.autosize = true;
   layout.height = Math.round(pack.rows * rowPx + GRID_PAD_PX);
 
-  return { data: data, layout: layout, yRange: yRange };
+  return {
+    data: data,
+    layout: layout,
+    yRange: yRange,
+    ids: stack ? new Set(placed.keys()) : null,
+  };
 }
 
 function overlayColor(i) {
@@ -3242,7 +3353,8 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank, foc
   const yRange = stackYRange(
     fig,
     placed,
-    link && link.yRange ? link.yRange : null
+    link && link.yRange ? link.yRange : null,
+    spanMs(range)
   );
   if (yRange) {
     ay.range = yRange.slice();
@@ -3257,7 +3369,12 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank, foc
       (legendRows - 1) * NEIGHBOUR_LEGEND_ROW_PX
   );
 
-  return { data: data, layout: layout, yRange: yRange };
+  return {
+    data: data,
+    layout: layout,
+    yRange: yRange,
+    ids: new Set(placed.keys()),
+  };
 }
 
 function stationGrid(c, views) {
@@ -3331,6 +3448,11 @@ function stationGrid(c, views) {
     else fn();
   };
 
+  const sharedColumn = (dpd) => {
+    const dcol = detailColumnName(dpd);
+    return !!(gridCol && dcol && dcol.toLowerCase() === gridCol.toLowerCase());
+  };
+
   const linkGeom = () => {
     const pd = g._wxPlotDiv;
     const dpd = panelPlot(wrap._wxPanel);
@@ -3345,14 +3467,55 @@ function stationGrid(c, views) {
     const x0 = (dr.left + ds.l - gr.left - gs.l) / gs.w;
     const x1 = (dr.left + ds.l + ds.w - gr.left - gs.l) / gs.w;
     if (!(x1 > x0)) return null;
-    const dcol = detailColumnName(dpd);
-    const shared =
-      gridCol && dcol && dcol.toLowerCase() === gridCol.toLowerCase();
+    const range = Array.isArray(dxa.range) ? dxa.range.slice() : null;
     return {
       align: [Math.max(0, Math.min(1, x0)), Math.max(0, Math.min(1, x1))],
-      range: Array.isArray(dxa.range) ? dxa.range.slice() : null,
-      yRange: shared ? axisRange(dpd._fullLayout, "yaxis") : null,
+      range: range,
+      yRange: sharedColumn(dpd) ? detailFit(dpd, spanMs(range)) : null,
     };
+  };
+
+  let fitIds = null;
+  let fitFrame = 0;
+
+  const refit = () => {
+    fitFrame = 0;
+    const pd = g._wxPlotDiv;
+    const fl = pd && pd._fullLayout;
+    if (!fl || !pd.layout || !fitIds || !wrap._wxStacked) return;
+    const key = anchorXAxisKey(fl);
+    const view = key ? spanMs(axisRange(fl, key)) : null;
+    if (!view) return;
+    const dpd = panelPlot(wrap._wxPanel);
+    const base = dpd && sharedColumn(dpd) ? detailFit(dpd, view) : null;
+    const range = stackYRange(fig, fitIds, base, view);
+    if (!range) return;
+    const patch = {};
+    let dirty = false;
+    for (const k of Object.keys(pd.layout)) {
+      if (!/^yaxis\d*$/.test(k)) continue;
+      const ya = fl[k];
+      if (!ya || ya.visible === false || sameRange(ya.range, range)) continue;
+      patch[k + ".autorange"] = false;
+      patch[k + ".range"] = range.slice();
+      dirty = true;
+    }
+    try {
+      if (dirty) Plotly.relayout(pd, patch);
+      if (base && !sameRange(axisRange(dpd._fullLayout, "yaxis"), range)) {
+        wrap._wxYPushed = true;
+        Plotly.relayout(dpd, {
+          "yaxis.autorange": false,
+          "yaxis.range": range.slice(),
+        });
+      }
+    } catch (e) {
+      void e;
+    }
+  };
+
+  wrap._wxRefit = () => {
+    if (!fitFrame) fitFrame = requestAnimationFrame(refit);
   };
 
   const captureRanges = () => {
@@ -3417,6 +3580,7 @@ function stationGrid(c, views) {
       console.warn("station grid filter failed", e);
       return true;
     }
+    const ids = filtered ? next.ids || null : null;
     if (isMobile()) {
       try {
         next = buildMobileFigure(next, { height: next.layout.height });
@@ -3483,6 +3647,7 @@ function stationGrid(c, views) {
         lastSig = null;
         return true;
       }
+      fitIds = ids;
 
       if (link && link.yRange && next.yRange) {
         const dpd = panelPlot(wrap._wxPanel);
@@ -4406,6 +4571,10 @@ function openOverviewChart(panel, f, row) {
 
   const opts = detailOpts(f.station, f.tab);
   opts.maxHeight = () => overviewPlotCap(panel);
+  opts.onFit = () => {
+    const grid = panel._wxGrid;
+    if (grid && typeof grid._wxRefit === "function") grid._wxRefit();
+  };
   detailModule()
     .then((m) => m.mount(panel, opts))
     .then(() => {
@@ -5782,6 +5951,21 @@ function wireGridRangeSync(wrap) {
   );
 }
 
+const Y_RANGE_KEY_RE = /^yaxis\d*\.range/;
+
+function wireGridFit(wrap) {
+  const pd = wrap._wxGridPlot;
+  if (!pd || typeof pd.on !== "function" || pd._wxFitWired) return;
+  pd._wxFitWired = true;
+  pd.on("plotly_relayout", (e) => {
+    if (!wrap._wxStacked || !isRangeEvent(e)) return;
+    for (const key of Object.keys(e)) {
+      if (Y_RANGE_KEY_RE.test(key)) return;
+    }
+    if (typeof wrap._wxRefit === "function") wrap._wxRefit();
+  });
+}
+
 function wirePanelRangeSync(panel, dpd) {
   const wrap = panel && panel._wxGrid;
   if (!wrap || !dpd) return;
@@ -5980,6 +6164,7 @@ function wireGridStationClicks(wrap, g) {
     wireGridAlertClicks(wrap);
     wireGridSpike(wrap);
     wireGridRangeSync(wrap);
+    wireGridFit(wrap);
     wireGridZoom(wrap);
   };
 
