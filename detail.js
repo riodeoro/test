@@ -57,7 +57,9 @@ const CHECK_SVG =
   '<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">' +
   '<path d="M2.4 6.3 4.8 8.7 9.6 3.5"/></svg>';
 
-let _normalsOn = false;
+let _normalsOn = true;
+
+const NORMALS_WAIT_MS = 120;
 
 let _configPromise = null;
 let _config = null;
@@ -639,24 +641,34 @@ export async function mount(host, opts) {
     window.ensureGridToggleStyles();
   }
   const normalsWrap = node("div", "wx-detail-control");
-  normalsWrap.style.justifyContent = "flex-end";
-  normalsWrap.style.minWidth = "0";
+  normalsWrap.appendChild(node("label", null, "Historical"));
+  const normalsRow = node("div");
+  normalsRow.style.display = "flex";
+  normalsRow.style.alignItems = "stretch";
+  normalsRow.style.gap = "6px";
   const normalsBtn = document.createElement("button");
   normalsBtn.type = "button";
+  normalsBtn.className = "wx-detail-select";
+  normalsBtn.style.display = "inline-flex";
+  normalsBtn.style.alignItems = "center";
+  normalsBtn.style.gap = "6px";
+  normalsBtn.style.flex = "0 0 auto";
+  const normalsMark = node("span", "wx-grid-mode show");
+  normalsMark.style.cursor = "inherit";
   const normalsBox = node("span", "box");
   normalsBox.innerHTML = CHECK_SVG;
-  normalsBtn.appendChild(normalsBox);
-  normalsBtn.appendChild(node("span", null, "Past years"));
-  normalsWrap.appendChild(normalsBtn);
-  controls.appendChild(normalsWrap);
-
-  const yearWrap = node("div", "wx-detail-control");
-  yearWrap.appendChild(node("label", null, "Year"));
+  normalsMark.appendChild(normalsBox);
+  normalsBtn.appendChild(normalsMark);
+  normalsBtn.appendChild(node("span", null, "Show"));
   const selYear = document.createElement("select");
   selYear.className = "wx-detail-select";
-  yearWrap.appendChild(selYear);
-  yearWrap.style.display = "none";
-  controls.appendChild(yearWrap);
+  selYear.style.flex = "1 1 auto";
+  selYear.style.minWidth = "0";
+  selYear.setAttribute("aria-label", "Year");
+  normalsRow.appendChild(normalsBtn);
+  normalsRow.appendChild(selYear);
+  normalsWrap.appendChild(normalsRow);
+  controls.appendChild(normalsWrap);
 
   let normals = null;
   let pickYear = null;
@@ -669,14 +681,16 @@ export async function mount(host, opts) {
     const years = on
       ? pastYears(normals, [primary, secondary].filter((c) => supports(normals, c)), payload.endMs)
       : [];
-    yearWrap.style.display = years.length ? "" : "none";
-    const sig = years.join(",");
+    selYear.disabled = !years.length;
+    selYear.style.opacity = years.length ? "" : "0.4";
+    selYear.style.cursor = years.length ? "" : "default";
+    const sig = years.length ? years.join(",") : yearOptions || "-";
     if (sig !== yearOptions) {
       yearOptions = sig;
       selYear.innerHTML = "";
       const none = document.createElement("option");
       none.value = "";
-      none.textContent = "None";
+      none.textContent = "No year";
       selYear.appendChild(none);
       for (const y of years) {
         const o = document.createElement("option");
@@ -696,10 +710,10 @@ export async function mount(host, opts) {
     const avail = anySupported(normals, [primary, secondary]);
     const on = avail && _normalsOn;
     normalsBtn.disabled = !avail;
-    normalsBtn.className = "wx-grid-mode show" + (on ? " on" : "");
+    normalsMark.className = "wx-grid-mode show" + (on ? " on" : "");
     normalsBtn.setAttribute("aria-pressed", on ? "true" : "false");
     normalsBtn.style.opacity = avail ? "" : "0.4";
-    normalsBtn.style.cursor = avail ? "" : "default";
+    normalsBtn.style.cursor = avail ? "pointer" : "default";
     syncYears();
   };
   updateNormalsControl();
@@ -816,11 +830,11 @@ export async function mount(host, opts) {
     draw();
   };
 
-  loadNormals(payload.name).then((n) => {
+  const normalsJob = loadNormals(payload.name).then((n) => {
     normals = n;
     if (!plot.isConnected) return;
     updateNormalsControl();
-    if (_normalsOn && anySupported(n, [primary, secondary])) draw();
+    if (drawn && _normalsOn && anySupported(n, [primary, secondary])) draw();
   });
 
   normalsBtn.addEventListener("click", () => {
@@ -842,6 +856,12 @@ export async function mount(host, opts) {
       draw();
     });
   });
+
+  await Promise.race([
+    normalsJob,
+    new Promise((resolve) => setTimeout(resolve, NORMALS_WAIT_MS)),
+  ]);
+  if (!plot.isConnected) return;
 
   await syncAlerts(true);
   if (!plot.isConnected) return;
