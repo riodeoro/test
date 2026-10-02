@@ -565,28 +565,25 @@ function edgeValue(t, v, k, n, x) {
   return dt > 0 ? a + ((b - a) * (x - t[k - 1])) / dt : b;
 }
 
-function fitRange(series, col, view) {
-  const v = series && col && !CIRCULAR_COLS.has(col) ? series[col] : null;
-  if (!v || !series.n) return null;
-  const t = series.t;
+function extent(t, v, n, view, box) {
   let a = 0;
-  let b = series.n;
+  let b = n;
   while (a < b) {
     const m = (a + b) >> 1;
     if (t[m] < view[0]) a = m + 1;
     else b = m;
   }
-  let min = Infinity;
-  let max = -Infinity;
+  let min = box.min;
+  let max = box.max;
   let i = a;
-  for (; i < series.n && t[i] <= view[1]; i++) {
+  for (; i < n && t[i] <= view[1]; i++) {
     const y = v[i];
     if (!Number.isFinite(y)) continue;
     if (y < min) min = y;
     if (y > max) max = y;
   }
-  const head = edgeValue(t, v, a, series.n, view[0]);
-  const tail = edgeValue(t, v, i, series.n, view[1]);
+  const head = edgeValue(t, v, a, n, view[0]);
+  const tail = edgeValue(t, v, i, n, view[1]);
   if (Number.isFinite(head)) {
     if (head < min) min = head;
     if (head > max) max = head;
@@ -595,6 +592,23 @@ function fitRange(series, col, view) {
     if (tail < min) min = tail;
     if (tail > max) max = tail;
   }
+  box.min = min;
+  box.max = max;
+}
+
+function yearExtent(drawn, col, pick) {
+  const year = drawn && pick ? pick.series : null;
+  return year && year.n && year[col] ? year : null;
+}
+
+function fitRange(series, col, view, year) {
+  const v = series && col && !CIRCULAR_COLS.has(col) ? series[col] : null;
+  if (!v || !series.n) return null;
+  const box = { min: Infinity, max: -Infinity };
+  extent(series.t, v, series.n, view, box);
+  if (year) extent(year.t, year[col], year.n, view, box);
+  const min = box.min;
+  const max = box.max;
   if (min > max) return null;
   const span = max - min;
   const pad = span > 0 ? span * FIT_PAD : Math.max(Math.abs(max) * FIT_PAD, FIT_FLAT);
@@ -859,7 +873,9 @@ export async function mount(host, opts) {
 
   plot._wxFitY = (view) => {
     const span = view || fullView(plot);
-    return shown && span ? fitRange(shown.series, shown.primary, span) : null;
+    return shown && span
+      ? fitRange(shown.series, shown.primary, span, shown.year1)
+      : null;
   };
 
   const refit = () => {
@@ -868,9 +884,13 @@ export async function mount(host, opts) {
     const view = fullView(plot);
     if (!view) return;
     const update = {};
-    const r1 = yHeld ? null : fitRange(shown.series, shown.primary, view);
+    const r1 = yHeld
+      ? null
+      : fitRange(shown.series, shown.primary, view, shown.year1);
     if (r1) update["yaxis.range"] = r1;
-    const r2 = shown.secondary ? fitRange(shown.series, shown.secondary, view) : null;
+    const r2 = shown.secondary
+      ? fitRange(shown.series, shown.secondary, view, shown.year2)
+      : null;
     if (r2) update["yaxis2.range"] = r2;
     if (!r1 && !r2) return;
     try {
@@ -931,6 +951,8 @@ export async function mount(host, opts) {
       aSecondary,
       showAlerts
     );
+    let year1 = null;
+    let year2 = null;
     if (on) {
       const pick =
         pickYear !== null && yearSeries
@@ -942,30 +964,44 @@ export async function mount(host, opts) {
                   : yearSeries,
             }
           : null;
-      applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs, pick);
+      year1 = yearExtent(
+        applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs, pick),
+        primary,
+        pick
+      );
       if (secondary && fig.layout && fig.layout.yaxis2) {
-        applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs, pick);
+        year2 = yearExtent(
+          applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs, pick),
+          secondary,
+          pick
+        );
       }
     }
     const kept = drawn ? fullView(plot) || currentView(plot) : null;
     focusWindow(fig, payload.startMs, payload.endMs, kept);
     const view = kept || [payload.startMs, payload.endMs];
     const hasSecond = !!(secondary && fig.layout.yaxis2);
-    shown = { series, primary, secondary: hasSecond ? secondary : null };
+    shown = {
+      series,
+      primary,
+      secondary: hasSecond ? secondary : null,
+      year1,
+      year2,
+    };
     const slider = fig.layout.xaxis.rangeslider;
     slider.yaxis = sliderAxis(fig, "y");
     const heldAxis = yHeld && plot._fullLayout ? plot._fullLayout.yaxis : null;
     const r1 =
       heldAxis && Array.isArray(heldAxis.range)
         ? heldAxis.range.slice()
-        : fitRange(series, primary, view);
+        : fitRange(series, primary, view, year1);
     if (r1) {
       fig.layout.yaxis.range = r1;
       fig.layout.yaxis.autorange = false;
     }
     if (hasSecond) {
       slider.yaxis2 = sliderAxis(fig, "y2");
-      const r2 = fitRange(series, secondary, view);
+      const r2 = fitRange(series, secondary, view, year2);
       if (r2) {
         fig.layout.yaxis2.range = r2;
         fig.layout.yaxis2.autorange = false;
