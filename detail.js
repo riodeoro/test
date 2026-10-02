@@ -19,7 +19,6 @@ import {
   applyNormals,
   pastYears,
   shiftYears,
-  yearTrace,
 } from "./normals.js";
 
 const ATTR_TAB = {
@@ -777,19 +776,20 @@ export async function mount(host, opts) {
       aSecondary,
       showAlerts
     );
-    if (on && pickYear !== null && yearSeries) {
-      const ys = rainPrimary || rainSecondary ? cumulativeSeries(yearSeries, RAIN_COL) : yearSeries;
-      const extra = [];
-      if (supports(normals, primary)) extra.push(yearTrace(ys, primary, "y", pickYear));
-      if (secondary && fig.layout && fig.layout.yaxis2 && supports(normals, secondary)) {
-        extra.push(yearTrace(ys, secondary, "y2", pickYear));
-      }
-      fig.data = extra.filter(Boolean).concat(fig.data);
-    }
     if (on) {
-      applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs);
+      const pick =
+        pickYear !== null && yearSeries
+          ? {
+              year: pickYear,
+              series:
+                rainPrimary || rainSecondary
+                  ? cumulativeSeries(yearSeries, RAIN_COL)
+                  : yearSeries,
+            }
+          : null;
+      applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs, pick);
       if (secondary && fig.layout && fig.layout.yaxis2) {
-        applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs);
+        applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs, pick);
       }
     }
     focusWindow(
