@@ -1,6 +1,7 @@
 import { YEAR_MIN } from "./config.js";
 import {
   ALL_SENSOR_COLS,
+  CIRCULAR_COLS,
   STATION_DETAIL_MAX,
   loadStationConfig,
   stationSource,
@@ -59,6 +60,9 @@ const CHECK_SVG =
 let _normalsOn = false;
 
 const NORMALS_WAIT_MS = 120;
+
+const FIT_PAD = 0.06;
+const FIT_FLAT = 0.5;
 
 let _configPromise = null;
 let _config = null;
@@ -541,6 +545,42 @@ function focusWindow(fig, startMs, endMs, view) {
   return fig;
 }
 
+function fullView(plot) {
+  const ax = plot && plot._fullLayout && plot._fullLayout.xaxis;
+  const r = ax && ax.range;
+  if (!r || r.length !== 2 || typeof ax.r2l !== "function") return null;
+  const lo = ax.r2l(r[0]);
+  const hi = ax.r2l(r[1]);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+  return [lo, hi];
+}
+
+function fitRange(series, col, view) {
+  const v = series && col && !CIRCULAR_COLS.has(col) ? series[col] : null;
+  if (!v || !series.n) return null;
+  const t = series.t;
+  let a = 0;
+  let b = series.n;
+  while (a < b) {
+    const m = (a + b) >> 1;
+    if (t[m] < view[0]) a = m + 1;
+    else b = m;
+  }
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = a; i < series.n && t[i] <= view[1]; i++) {
+    const y = v[i];
+    if (!Number.isFinite(y)) continue;
+    if (y < min) min = y;
+    if (y > max) max = y;
+  }
+  if (min > max) return null;
+  const span = max - min;
+  const pad = span > 0 ? span * FIT_PAD : Math.max(Math.abs(max) * FIT_PAD, FIT_FLAT);
+  const low = min >= 0 && min - pad < 0 ? 0 : min - pad;
+  return [low, max + pad];
+}
+
 function currentView(plot) {
   const ax = plot && plot.layout && plot.layout.xaxis;
   const r = ax && ax.range;
@@ -748,11 +788,46 @@ export async function mount(host, opts) {
     return false;
   };
 
+  let shown = null;
+  let fitFrame = 0;
+
+  const refit = () => {
+    fitFrame = 0;
+    if (!plot.isConnected || !shown) return;
+    const view = fullView(plot);
+    if (!view) return;
+    const update = {};
+    const r1 = fitRange(shown.series, shown.primary, view);
+    if (r1) update["yaxis.range"] = r1;
+    const r2 = shown.secondary ? fitRange(shown.series, shown.secondary, view) : null;
+    if (r2) update["yaxis2.range"] = r2;
+    if (!r1 && !r2) return;
+    try {
+      const p = Plotly.relayout(plot, update);
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {
+      void e;
+    }
+  };
+
+  const onRelayout = (ev) => {
+    if (!ev || fitFrame) return;
+    let moved = false;
+    for (const key of Object.keys(ev)) {
+      if (key.indexOf("xaxis.") === 0) {
+        moved = true;
+        break;
+      }
+    }
+    if (moved) fitFrame = requestAnimationFrame(refit);
+  };
+
   const wire = () => {
     if (wired || typeof plot.on !== "function") return;
     wired = true;
     plot.on("plotly_legendclick", toggleAlerts);
     plot.on("plotly_legenddoubleclick", toggleAlerts);
+    plot.on("plotly_relayout", onRelayout);
   };
 
   const draw = () => {
@@ -792,12 +867,26 @@ export async function mount(host, opts) {
         applyNormals(fig, normals, secondary, "y2", payload.startMs, payload.endMs, pick);
       }
     }
-    focusWindow(
-      fig,
-      payload.startMs,
-      payload.endMs,
-      drawn ? currentView(plot) : null
-    );
+    const kept = drawn ? fullView(plot) || currentView(plot) : null;
+    focusWindow(fig, payload.startMs, payload.endMs, kept);
+    const view = kept || [payload.startMs, payload.endMs];
+    const hasSecond = !!(secondary && fig.layout.yaxis2);
+    shown = { series, primary, secondary: hasSecond ? secondary : null };
+    const slider = fig.layout.xaxis.rangeslider;
+    slider.yaxis = { rangemode: "auto" };
+    const r1 = fitRange(series, primary, view);
+    if (r1) {
+      fig.layout.yaxis.range = r1;
+      fig.layout.yaxis.autorange = false;
+    }
+    if (hasSecond) {
+      slider.yaxis2 = { rangemode: "auto" };
+      const r2 = fitRange(series, secondary, view);
+      if (r2) {
+        fig.layout.yaxis2.range = r2;
+        fig.layout.yaxis2.autorange = false;
+      }
+    }
     fig.layout.height = heightFor();
     if (drawn) {
       Plotly.react(plot, fig.data, fig.layout, PLOT_CONFIG);
