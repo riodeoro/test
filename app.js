@@ -540,13 +540,15 @@ const NEIGHBOUR_PALETTE = [
   "#db2777", "#a16207", "#4f46e5", "#b45309", "#0891b2",
 ];
 
-const NEIGHBOUR_DASH = [
-  "solid", "dot", "dash", "longdash", "dashdot", "longdashdot",
-];
-
 const NEIGHBOUR_LINE_WIDTH = 1.3;
 
 const NEIGHBOUR_LINE_OPACITY = 0.9;
+
+const NEIGHBOUR_MUTED_OPACITY = 0.55;
+
+const OVERLAY_FOCUS_COLOR = "#26231f";
+
+const OVERLAY_FOCUS_WIDTH = 2.2;
 
 const NEIGHBOUR_OVERLAY_ROWS = 1;
 
@@ -3073,14 +3075,16 @@ function overlayColor(i) {
   return NEIGHBOUR_PALETTE[i % NEIGHBOUR_PALETTE.length];
 }
 
-function overlayDash(i) {
-  return NEIGHBOUR_DASH[i % NEIGHBOUR_DASH.length];
-}
-
-function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
+function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank, focus) {
   if (!selected || !selected.size) return null;
 
-  const use = cells.filter((cell) => selected.has(cell.station));
+  const focusKey = focus ? neighbourKey(focus) : "";
+  const isFocus = (cell) =>
+    !!focusKey && neighbourKey(cell.station) === focusKey;
+
+  const use = cells.filter(
+    (cell) => selected.has(cell.station) || isFocus(cell)
+  );
   if (!use.length) return null;
 
   const seat =
@@ -3090,11 +3094,15 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
           return at === undefined ? Infinity : at;
         }
       : null;
+  const lead = (cell) => (isFocus(cell) ? 0 : 1);
   use.sort(
-    seat
-      ? (a, b) => seat(a) - seat(b) || a.x0 - b.x0 || b.y0 - a.y0
-      : (a, b) => a.x0 - b.x0 || b.y0 - a.y0
+    (a, b) =>
+      lead(a) - lead(b) ||
+      (seat ? seat(a) - seat(b) : 0) ||
+      a.x0 - b.x0 ||
+      b.y0 - a.y0
   );
+  const hasFocus = isFocus(use[0]);
 
   const layout = cloneLayout(fig.layout);
   const host = use[0];
@@ -3155,25 +3163,35 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
   });
 
   const built = [];
+  const named = new Set();
   for (const tr of fig.data || []) {
     const id = tr.xaxis || "x";
     if (!slot.has(id) || isAlertTrace(tr)) continue;
     const i = slot.get(id);
     const station = use[i].station;
-    const color = overlayColor(i);
+    const front = hasFocus && i === 0;
+    const color = front
+      ? OVERLAY_FOCUS_COLOR
+      : overlayColor(hasFocus ? i - 1 : i);
     const out = Object.assign({}, tr);
     out.xaxis = hostX;
     out.yaxis = hostY;
     out.visible = true;
     out.name = station;
-    out.showlegend = true;
+    out.legendgroup = station;
+    out.showlegend = !named.has(i);
+    named.add(i);
     out.legendrank = i;
-    out.opacity = NEIGHBOUR_LINE_OPACITY;
+    out.opacity = front
+      ? 1
+      : hasFocus
+        ? NEIGHBOUR_MUTED_OPACITY
+        : NEIGHBOUR_LINE_OPACITY;
     if (tr.hovertemplate) out.hovertemplate = overlayHoverTemplate(tr.hovertemplate);
     out.line = Object.assign({}, tr.line, {
       color: color,
-      width: NEIGHBOUR_LINE_WIDTH,
-      dash: overlayDash(i),
+      width: front ? OVERLAY_FOCUS_WIDTH : NEIGHBOUR_LINE_WIDTH,
+      dash: "solid",
     });
     if (tr.marker) out.marker = Object.assign({}, tr.marker, { color: color });
     delete out.fill;
@@ -3204,6 +3222,7 @@ function buildOverlayFigure(fig, cells, rowPx, selected, link, ranges, rank) {
     yanchor: "bottom",
     bgcolor: "rgba(255,255,255,0)",
     font: { size: 9, color: "#57534e" },
+    traceorder: "normal",
     tracegroupgap: 3,
     entrywidth: 1 / NEIGHBOUR_LEGEND_COLS,
     entrywidthmode: "fraction",
@@ -3376,11 +3395,16 @@ function stationGrid(c, views) {
     }
     const link = filtered ? linkGeom() : null;
     const wantOverlay = filtered && overlay;
+    const lit = wrap._wxPanel;
+    const focus =
+      wantOverlay && lit && lit.style.display !== "none"
+        ? lit._wxStation || null
+        : null;
     let next = null;
     try {
       if (wantOverlay) {
         next = buildOverlayFigure(
-          fig, cells, rowPx, selected, link, useRanges, order
+          fig, cells, rowPx, selected, link, useRanges, order, focus
         );
       }
       wrap._wxOverlay = !!next;
@@ -3413,6 +3437,7 @@ function stationGrid(c, views) {
     const sig = [
       viewKey,
       wantOverlay ? "1" : "0",
+      focus || "",
       selected ? Array.from(selected).sort().join("\u0001") : "",
       order ? Array.from(order.keys()).join("\u0002") : "",
       Math.round(rowPx),
