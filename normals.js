@@ -295,40 +295,54 @@ function fmt(v) {
   return v === null ? null : Math.round(v * 10) / 10;
 }
 
-function bandTraces(band, yaxis, col) {
-  const x = band.x.map(isoStamp);
-  const fills = INVERTED.has(col) ? BAND_FILLS.slice().reverse() : BAND_FILLS;
-  const hover = {
-    p50: { hovertemplate: "Median: %{y:.1f}<extra></extra>" },
-    p90: {
-      customdata: band.p10.map(fmt),
-      hovertemplate: "P10\u2013P90: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
-    },
-    hi: {
-      customdata: band.lo.map(fmt),
-      hovertemplate: "Range: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
-    },
-  };
-  return EDGES.map((edge, i) => {
-    const trace = {
+function ghost(x, y, yaxis, extra) {
+  return Object.assign(
+    {
       type: "scatter",
       mode: "lines",
       x,
-      y: band[edge].map(fmt),
+      y,
       xaxis: "x",
       yaxis,
       showlegend: false,
       connectgaps: false,
       line: { width: 0 },
-    };
+    },
+    extra
+  );
+}
+
+function bandTraces(band, yaxis, col) {
+  const x = band.x.map(isoStamp);
+  const fills = INVERTED.has(col) ? BAND_FILLS.slice().reverse() : BAND_FILLS;
+  const ys = {};
+  for (const edge of EDGES) ys[edge] = band[edge].map(fmt);
+  const under = EDGES.map((edge, i) => {
+    const extra = { hoverinfo: "skip" };
     if (i > 0) {
-      trace.fill = "tonexty";
-      trace.fillcolor = fills[i - 1];
+      extra.fill = "tonexty";
+      extra.fillcolor = fills[i - 1];
     }
-    if (hover[edge]) Object.assign(trace, hover[edge]);
-    else trace.hoverinfo = "skip";
-    return trace;
+    return ghost(x, ys[edge], yaxis, extra);
   });
+  const over = [
+    ghost(x, ys.p50, yaxis, {
+      hovertemplate: "Median: %{y:.1f}<extra></extra>",
+    }),
+    ghost(x, ys.p75, yaxis, {
+      customdata: ys.p25,
+      hovertemplate: "P25\u2013P75: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
+    }),
+    ghost(x, ys.p90, yaxis, {
+      customdata: ys.p10,
+      hovertemplate: "P10\u2013P90: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
+    }),
+    ghost(x, ys.hi, yaxis, {
+      customdata: ys.lo,
+      hovertemplate: "Range: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
+    }),
+  ];
+  return { under, over };
 }
 
 function lineOnBands(fig, col, yaxis) {
@@ -341,9 +355,10 @@ function lineOnBands(fig, col, yaxis) {
   }
 }
 
-export function yearTrace(series, col, yaxis, year) {
+function yearTraces(pick, col, yaxis) {
+  const series = pick && pick.series;
   const v = series && series[col];
-  if (!v || !series.n) return null;
+  if (!v || !series.n) return { under: [], over: [] };
   const x = new Array(series.n);
   const y = new Array(series.n);
   for (let i = 0; i < series.n; i++) {
@@ -351,27 +366,36 @@ export function yearTrace(series, col, yaxis, year) {
     y[i] = Number.isFinite(v[i]) ? fmt(v[i]) : null;
   }
   return {
-    type: "scatter",
-    mode: "lines",
-    x,
-    y,
-    xaxis: "x",
-    yaxis,
-    showlegend: false,
-    connectgaps: false,
-    line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
-    hovertemplate: `${year}: %{y:.1f}<extra></extra>`,
+    under: [
+      ghost(x, y, yaxis, {
+        line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
+        hoverinfo: "skip",
+      }),
+    ],
+    over: [
+      ghost(x, y, yaxis, {
+        hovertemplate: `${pick.year}: %{y:.1f}<extra></extra>`,
+      }),
+    ],
   };
 }
 
-export function applyNormals(fig, normals, col, yaxis, startMs, endMs) {
+export function applyNormals(fig, normals, col, yaxis, startMs, endMs, pick) {
   if (!fig || !fig.layout || !Array.isArray(fig.data) || !col) return false;
   if (!fig.layout[axisKey(yaxis)]) return false;
   const band = col === RAIN_COL
     ? rainBandFor(normals, startMs, endMs)
     : bandFor(normals, col, startMs, endMs);
   if (!band) return false;
-  fig.data = bandTraces(band, yaxis, col).concat(fig.data);
+  const bands = bandTraces(band, yaxis, col);
+  const year = yearTraces(pick, col, yaxis);
+  const own = [];
+  const rest = [];
+  for (const tr of fig.data) {
+    if (tr && (tr.yaxis || "y") === yaxis) own.push(tr);
+    else rest.push(tr);
+  }
+  fig.data = bands.under.concat(year.under, rest, own, year.over, bands.over);
   lineOnBands(fig, col, yaxis);
   return true;
 }
