@@ -17,6 +17,9 @@ import {
   cumulativeSeries,
   remapAlerts,
   applyNormals,
+  pastYears,
+  shiftYears,
+  yearTrace,
 } from "./normals.js";
 
 const ATTR_TAB = {
@@ -367,6 +370,31 @@ function yearsFor(startMs, endMs) {
 }
 
 const _seriesCache = new Map();
+const _yearCache = new Map();
+const YEAR_CACHE_MAX = 12;
+
+function loadYear(name, year, startMs, endMs) {
+  const key = [name, year, startMs, endMs].join("|");
+  const hit = lruGet(_yearCache, key);
+  if (hit) return hit;
+  const p = (async () => {
+    await warmEngine();
+    const k = new Date(endMs).getUTCFullYear() - year;
+    const lo = shiftYears(startMs, -k);
+    const hi = shiftYears(endMs, -k);
+    const source = await stationSource(name, yearsFor(lo, hi), [name]);
+    if (!source) return null;
+    const want = source.columns.filter((c) => ALL_SENSOR_COLS.includes(c));
+    if (!want.length) return null;
+    const series = await stationSeries(source, name, want, STATION_DETAIL_MAX, [lo, hi]);
+    if (!series || !series.n) return null;
+    const t = new Float64Array(series.n);
+    for (let i = 0; i < series.n; i++) t[i] = shiftYears(series.t[i], k);
+    return Object.assign({}, series, { t });
+  })().catch(() => null);
+  lruSet(_yearCache, key, p, YEAR_CACHE_MAX);
+  return p;
+}
 
 async function openSource(station, years) {
   await warmEngine();
@@ -622,7 +650,47 @@ export async function mount(host, opts) {
   normalsWrap.appendChild(normalsBtn);
   controls.appendChild(normalsWrap);
 
+  const yearWrap = node("div", "wx-detail-control");
+  yearWrap.appendChild(node("label", null, "Year"));
+  const selYear = document.createElement("select");
+  selYear.className = "wx-detail-select";
+  yearWrap.appendChild(selYear);
+  yearWrap.style.display = "none";
+  controls.appendChild(yearWrap);
+
   let normals = null;
+  let pickYear = null;
+  let yearSeries = null;
+  let yearToken = 0;
+  let yearOptions = "";
+
+  const syncYears = () => {
+    const on = _normalsOn && anySupported(normals, [primary, secondary]);
+    const years = on
+      ? pastYears(normals, [primary, secondary].filter((c) => supports(normals, c)), payload.endMs)
+      : [];
+    yearWrap.style.display = years.length ? "" : "none";
+    const sig = years.join(",");
+    if (sig !== yearOptions) {
+      yearOptions = sig;
+      selYear.innerHTML = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "None";
+      selYear.appendChild(none);
+      for (const y of years) {
+        const o = document.createElement("option");
+        o.value = String(y);
+        o.textContent = String(y);
+        selYear.appendChild(o);
+      }
+    }
+    if (on && pickYear !== null && !years.includes(pickYear)) {
+      pickYear = null;
+      yearSeries = null;
+    }
+    selYear.value = pickYear === null ? "" : String(pickYear);
+  };
 
   const updateNormalsControl = () => {
     const avail = anySupported(normals, [primary, secondary]);
@@ -632,6 +700,7 @@ export async function mount(host, opts) {
     normalsBtn.setAttribute("aria-pressed", on ? "true" : "false");
     normalsBtn.style.opacity = avail ? "" : "0.4";
     normalsBtn.style.cursor = avail ? "" : "default";
+    syncYears();
   };
   updateNormalsControl();
 
@@ -694,6 +763,15 @@ export async function mount(host, opts) {
       aSecondary,
       showAlerts
     );
+    if (on && pickYear !== null && yearSeries) {
+      const ys = rainPrimary || rainSecondary ? cumulativeSeries(yearSeries, RAIN_COL) : yearSeries;
+      const extra = [];
+      if (supports(normals, primary)) extra.push(yearTrace(ys, primary, "y", pickYear));
+      if (secondary && fig.layout && fig.layout.yaxis2 && supports(normals, secondary)) {
+        extra.push(yearTrace(ys, secondary, "y2", pickYear));
+      }
+      fig.data = extra.filter(Boolean).concat(fig.data);
+    }
     if (on) {
       applyNormals(fig, normals, primary, "y", payload.startMs, payload.endMs);
       if (secondary && fig.layout && fig.layout.yaxis2) {
@@ -750,6 +828,19 @@ export async function mount(host, opts) {
     _normalsOn = !_normalsOn;
     updateNormalsControl();
     draw();
+  });
+
+  selYear.addEventListener("change", () => {
+    const token = ++yearToken;
+    pickYear = selYear.value ? Number(selYear.value) : null;
+    yearSeries = null;
+    draw();
+    if (pickYear === null) return;
+    loadYear(payload.name, pickYear, payload.startMs, payload.endMs).then((ys) => {
+      if (token !== yearToken || !plot.isConnected) return;
+      yearSeries = ys;
+      draw();
+    });
   });
 
   await syncAlerts(true);
