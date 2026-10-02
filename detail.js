@@ -556,6 +556,15 @@ function fullView(plot) {
   return [lo, hi];
 }
 
+function edgeValue(t, v, k, n, x) {
+  if (k <= 0 || k >= n) return NaN;
+  const a = v[k - 1];
+  const b = v[k];
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
+  const dt = t[k] - t[k - 1];
+  return dt > 0 ? a + ((b - a) * (x - t[k - 1])) / dt : b;
+}
+
 function fitRange(series, col, view) {
   const v = series && col && !CIRCULAR_COLS.has(col) ? series[col] : null;
   if (!v || !series.n) return null;
@@ -569,11 +578,22 @@ function fitRange(series, col, view) {
   }
   let min = Infinity;
   let max = -Infinity;
-  for (let i = a; i < series.n && t[i] <= view[1]; i++) {
+  let i = a;
+  for (; i < series.n && t[i] <= view[1]; i++) {
     const y = v[i];
     if (!Number.isFinite(y)) continue;
     if (y < min) min = y;
     if (y > max) max = y;
+  }
+  const head = edgeValue(t, v, a, series.n, view[0]);
+  const tail = edgeValue(t, v, i, series.n, view[1]);
+  if (Number.isFinite(head)) {
+    if (head < min) min = head;
+    if (head > max) max = head;
+  }
+  if (Number.isFinite(tail)) {
+    if (tail < min) min = tail;
+    if (tail > max) max = tail;
   }
   if (min > max) return null;
   const span = max - min;
@@ -837,6 +857,11 @@ export async function mount(host, opts) {
   let fitFrame = 0;
   let yHeld = false;
 
+  plot._wxFitY = (view) => {
+    const span = view || fullView(plot);
+    return shown && span ? fitRange(shown.series, shown.primary, span) : null;
+  };
+
   const refit = () => {
     fitFrame = 0;
     if (!plot.isConnected || !shown) return;
@@ -955,6 +980,7 @@ export async function mount(host, opts) {
       if (p && p.then) p.then(wire, () => {});
       else wire();
     }
+    if (typeof opts.onFit === "function") opts.onFit();
   };
 
   let seq = 0;
