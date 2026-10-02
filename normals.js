@@ -27,6 +27,8 @@ const BAND_FILLS = [
 const INVERTED = new Set(["Rh", "Rn_1", "SM1", "SM2", "SM3"]);
 const LINE_ON_BANDS = "#26231f";
 const YEAR_COLOR = "#4b5563";
+const YEAR_GAP_FACTOR = 3;
+const YEAR_GAP_MIN_MS = 2 * HOUR_MS;
 
 const STAT = { lo: 0, p10: 1, p25: 2, p50: 3, p75: 4, p90: 5, hi: 6 };
 const EDGES = ["lo", "p10", "p25", "p50", "p75", "p90", "hi"];
@@ -372,18 +374,46 @@ function lineOnBands(fig, col, yaxis) {
   }
 }
 
+function gapLimit(times) {
+  const steps = [];
+  for (let i = 1; i < times.length; i++) {
+    const d = times[i] - times[i - 1];
+    if (d > 0) steps.push(d);
+  }
+  if (!steps.length) return Infinity;
+  steps.sort((a, b) => a - b);
+  const mid = steps.length >> 1;
+  const median = steps.length % 2 ? steps[mid] : (steps[mid - 1] + steps[mid]) / 2;
+  return Math.max(YEAR_GAP_FACTOR * median, YEAR_GAP_MIN_MS);
+}
+
 function yearTraces(pick, col, yaxis) {
   const series = pick && pick.series;
   const v = series && series[col];
   if (!v || !series.n) return [];
-  const x = new Array(series.n);
-  const y = new Array(series.n);
+  const times = [];
+  const vals = [];
   for (let i = 0; i < series.n; i++) {
-    x[i] = isoStamp(series.t[i]);
-    y[i] = Number.isFinite(v[i]) ? fmt(v[i]) : null;
+    if (!Number.isFinite(v[i])) continue;
+    times.push(series.t[i]);
+    vals.push(fmt(v[i]));
+  }
+  if (!times.length) return [];
+  const limit = gapLimit(times);
+  const x = [];
+  const y = [];
+  for (let i = 0; i < times.length; i++) {
+    if (i > 0 && times[i] - times[i - 1] > limit) {
+      x.push(isoStamp(times[i - 1] + 1000));
+      y.push(null);
+    }
+    x.push(isoStamp(times[i]));
+    y.push(vals[i]);
   }
   return [
     under(x, y, yaxis, {
+      mode: times.length === 1 ? "lines+markers" : "lines",
+      marker: { color: YEAR_COLOR, size: 3 },
       line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
       hovertemplate: `${pick.year}: %{y:.1f}<extra></extra>`,
     }),
