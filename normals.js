@@ -135,11 +135,17 @@ function hourlyIndex(centres, ms) {
   return { i0, i1, f };
 }
 
+function gridTimes(startMs, endMs) {
+  const first = Math.ceil(startMs / HOUR_MS) * HOUR_MS;
+  const step = Math.max(HOUR_MS, Math.ceil((endMs - first) / MAX_POINTS / HOUR_MS) * HOUR_MS);
+  const out = [];
+  for (let t = first; t <= endMs; t += step) out.push(t);
+  return out;
+}
+
 function hourlyBand(attr, centres, startMs, endMs) {
   const out = emptyBand();
-  let t = Math.ceil(startMs / HOUR_MS) * HOUR_MS;
-  const step = Math.max(HOUR_MS, Math.ceil((endMs - t) / MAX_POINTS / HOUR_MS) * HOUR_MS);
-  for (; t <= endMs; t += step) {
+  for (const t of gridTimes(startMs, endMs)) {
     const { i0, i1, f } = hourlyIndex(centres, t);
     const h = new Date(t).getUTCHours();
     out.x.push(t);
@@ -153,11 +159,16 @@ function hourlyBand(attr, centres, startMs, endMs) {
 
 function dailyBand(attr, startMs, endMs) {
   const out = emptyBand();
-  const first = Math.floor(startMs / DAY_MS) * DAY_MS;
-  for (let d = first; d <= endMs; d += DAY_MS) {
-    const i = doy366(d) - 1;
-    out.x.push(d + DAY_MS / 2);
-    for (const k of Object.keys(STAT)) out[k].push(slot(attr.d[STAT[k]], i));
+  for (const t of gridTimes(startMs, endMs)) {
+    const noon = Math.floor((t - DAY_MS / 2) / DAY_MS) * DAY_MS + DAY_MS / 2;
+    const f = (t - noon) / DAY_MS;
+    const i0 = doy366(noon) - 1;
+    const i1 = doy366(noon + DAY_MS) - 1;
+    out.x.push(t);
+    for (const k of Object.keys(STAT)) {
+      const arr = attr.d[STAT[k]];
+      out[k].push(mix(slot(arr, i0), slot(arr, i1), f));
+    }
   }
   return out;
 }
@@ -225,9 +236,13 @@ export function rainBandFor(normals, startMs, endMs) {
   if (used.length < MIN_YEARS) return null;
 
   const out = emptyBand();
-  out.x = [startMs].concat(segments.map((s) => s.end));
-  for (let j = 0; j < out.x.length; j++) {
-    const vals = curves.map((c) => c[j]).sort((a, b) => a - b);
+  const bounds = [startMs].concat(segments.map((s) => s.end));
+  let j = 0;
+  for (const t of gridTimes(startMs, endMs)) {
+    while (j < bounds.length - 2 && t > bounds[j + 1]) j++;
+    const f = (t - bounds[j]) / (bounds[j + 1] - bounds[j]);
+    const vals = curves.map((c) => c[j] + (c[j + 1] - c[j]) * f).sort((a, b) => a - b);
+    out.x.push(t);
     out.lo.push(vals[0]);
     out.p10.push(quantile(vals, 0.1));
     out.p25.push(quantile(vals, 0.25));
@@ -295,7 +310,7 @@ function fmt(v) {
   return v === null ? null : Math.round(v * 10) / 10;
 }
 
-function ghost(x, y, yaxis, extra) {
+function under(x, y, yaxis, extra) {
   return Object.assign(
     {
       type: "scatter",
@@ -312,37 +327,39 @@ function ghost(x, y, yaxis, extra) {
   );
 }
 
+function pairs(a, b) {
+  const out = new Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = [a[i], b[i]];
+  return out;
+}
+
+const PAIR = "%{customdata[0]:.1f} \u2013 %{customdata[1]:.1f}<extra></extra>";
+
 function bandTraces(band, yaxis, col) {
   const x = band.x.map(isoStamp);
   const fills = INVERTED.has(col) ? BAND_FILLS.slice().reverse() : BAND_FILLS;
   const ys = {};
   for (const edge of EDGES) ys[edge] = band[edge].map(fmt);
-  const under = EDGES.map((edge, i) => {
-    const extra = { hoverinfo: "skip" };
-    if (i > 0) {
+  const hover = {
+    p90: { customdata: pairs(ys.lo, ys.hi), hovertemplate: "Range: " + PAIR },
+    p75: { customdata: pairs(ys.p10, ys.p90), hovertemplate: "P10\u2013P90: " + PAIR },
+    p50: { customdata: pairs(ys.p25, ys.p75), hovertemplate: "P25\u2013P75: " + PAIR },
+    p25: {
+      customdata: ys.p50,
+      hovertemplate: "Median: %{customdata:.1f}<extra></extra>",
+    },
+  };
+  const out = [];
+  for (let i = EDGES.length - 1; i >= 0; i--) {
+    const edge = EDGES[i];
+    const extra = hover[edge] ? Object.assign({}, hover[edge]) : { hoverinfo: "skip" };
+    if (i < EDGES.length - 1) {
       extra.fill = "tonexty";
-      extra.fillcolor = fills[i - 1];
+      extra.fillcolor = fills[i];
     }
-    return ghost(x, ys[edge], yaxis, extra);
-  });
-  const over = [
-    ghost(x, ys.p50, yaxis, {
-      hovertemplate: "Median: %{y:.1f}<extra></extra>",
-    }),
-    ghost(x, ys.p75, yaxis, {
-      customdata: ys.p25,
-      hovertemplate: "P25\u2013P75: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
-    }),
-    ghost(x, ys.p90, yaxis, {
-      customdata: ys.p10,
-      hovertemplate: "P10\u2013P90: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
-    }),
-    ghost(x, ys.hi, yaxis, {
-      customdata: ys.lo,
-      hovertemplate: "Range: %{customdata:.1f} \u2013 %{y:.1f}<extra></extra>",
-    }),
-  ];
-  return { under, over };
+    out.push(under(x, ys[edge], yaxis, extra));
+  }
+  return out;
 }
 
 function lineOnBands(fig, col, yaxis) {
@@ -358,26 +375,19 @@ function lineOnBands(fig, col, yaxis) {
 function yearTraces(pick, col, yaxis) {
   const series = pick && pick.series;
   const v = series && series[col];
-  if (!v || !series.n) return { under: [], over: [] };
+  if (!v || !series.n) return [];
   const x = new Array(series.n);
   const y = new Array(series.n);
   for (let i = 0; i < series.n; i++) {
     x[i] = isoStamp(series.t[i]);
     y[i] = Number.isFinite(v[i]) ? fmt(v[i]) : null;
   }
-  return {
-    under: [
-      ghost(x, y, yaxis, {
-        line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
-        hoverinfo: "skip",
-      }),
-    ],
-    over: [
-      ghost(x, y, yaxis, {
-        hovertemplate: `${pick.year}: %{y:.1f}<extra></extra>`,
-      }),
-    ],
-  };
+  return [
+    under(x, y, yaxis, {
+      line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
+      hovertemplate: `${pick.year}: %{y:.1f}<extra></extra>`,
+    }),
+  ];
 }
 
 export function applyNormals(fig, normals, col, yaxis, startMs, endMs, pick) {
@@ -387,15 +397,7 @@ export function applyNormals(fig, normals, col, yaxis, startMs, endMs, pick) {
     ? rainBandFor(normals, startMs, endMs)
     : bandFor(normals, col, startMs, endMs);
   if (!band) return false;
-  const bands = bandTraces(band, yaxis, col);
-  const year = yearTraces(pick, col, yaxis);
-  const own = [];
-  const rest = [];
-  for (const tr of fig.data) {
-    if (tr && (tr.yaxis || "y") === yaxis) own.push(tr);
-    else rest.push(tr);
-  }
-  fig.data = bands.under.concat(year.under, rest, own, year.over, bands.over);
+  fig.data = bandTraces(band, yaxis, col).concat(yearTraces(pick, col, yaxis), fig.data);
   lineOnBands(fig, col, yaxis);
   return true;
 }
