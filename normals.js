@@ -26,6 +26,7 @@ const BAND_FILLS = [
 ];
 const INVERTED = new Set(["Rh", "Rn_1", "SM1", "SM2", "SM3"]);
 const LINE_ON_BANDS = "#26231f";
+const YEAR_COLOR = "#4b5563";
 
 const STAT = { lo: 0, p10: 1, p25: 2, p50: 3, p75: 4, p90: 5, hi: 6 };
 const EDGES = ["lo", "p10", "p25", "p50", "p75", "p90", "hi"];
@@ -78,6 +79,28 @@ export function supports(normals, col) {
 
 export function anySupported(normals, cols) {
   return (cols || []).some((c) => supports(normals, c));
+}
+
+export function pastYears(normals, cols, endMs) {
+  const endYear = new Date(endMs).getUTCFullYear();
+  const found = new Set();
+  for (const col of cols || []) {
+    if (!supports(normals, col)) continue;
+    if (col === RAIN_COL) {
+      for (const y of normals.rain.years) found.add(y);
+      continue;
+    }
+    const a = normals.attrs[col];
+    if (Array.isArray(a.yrs)) for (const y of a.yrs) found.add(y);
+    else for (let y = a.y[0]; y <= a.y[1]; y++) found.add(y);
+  }
+  return Array.from(found).filter((y) => y < endYear).sort((a, b) => b - a);
+}
+
+export function shiftYears(ms, k) {
+  const d = new Date(ms);
+  d.setUTCFullYear(d.getUTCFullYear() + k);
+  return d.getTime();
 }
 
 function doy366(ms) {
@@ -316,6 +339,29 @@ function lineOnBands(fig, col, yaxis) {
     if (tr.line) tr.line = Object.assign({}, tr.line, { color: LINE_ON_BANDS });
     if (tr.marker) tr.marker = Object.assign({}, tr.marker, { color: LINE_ON_BANDS });
   }
+}
+
+export function yearTrace(series, col, yaxis, year) {
+  const v = series && series[col];
+  if (!v || !series.n) return null;
+  const x = new Array(series.n);
+  const y = new Array(series.n);
+  for (let i = 0; i < series.n; i++) {
+    x[i] = isoStamp(series.t[i]);
+    y[i] = Number.isFinite(v[i]) ? fmt(v[i]) : null;
+  }
+  return {
+    type: "scatter",
+    mode: "lines",
+    x,
+    y,
+    xaxis: "x",
+    yaxis,
+    showlegend: false,
+    connectgaps: false,
+    line: { color: YEAR_COLOR, width: 1.4, dash: "dot" },
+    hovertemplate: `${year}: %{y:.1f}<extra></extra>`,
+  };
 }
 
 export function applyNormals(fig, normals, col, yaxis, startMs, endMs) {
