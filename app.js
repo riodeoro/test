@@ -4050,6 +4050,7 @@ const SEV_RE = {
   silentHours: /silent\s+(\d+(?:\.\d+)?)\s*h\s+straight/i,
   neighbourZero: /(\d+)\s+of\s+(\d+)\s+neighbour/i,
   silentZero: /silent\s+(\d+)\s+of\s+(\d+)\s+neighbour/i,
+  behindMm: /vs\s+(\d+(?:\.\d+)?)/i,
   vbatMin: /min\s+(-?\d+(?:\.\d+)?)\s*V/i,
   vbatDrop: /dropped\s+(-?\d+(?:\.\d+)?)\s*V/i,
   noCharge: /no charge\s+(\d+)/i,
@@ -4075,6 +4076,10 @@ const SEVERITY_CATEGORIES = [
     freq: { re: SEV_RE.neighbourZero },
   }],
   ["Precip", "SILENT RAIN GAUGES (SILENT \u226560% OF NEIGHBOUR RAIN HOURS)", 8, {
+    freq: { re: SEV_RE.silentZero },
+  }],
+  ["Precip", "RAIN GAUGES MISSING NEIGHBOUR RAIN", 7, {
+    mag: { re: SEV_RE.behindMm },
     freq: { re: SEV_RE.silentZero },
   }],
   ["Precip", "PRECIPITATION (RN_1) RECORDED WHILE RH WAS BELOW 10%", 8, {
