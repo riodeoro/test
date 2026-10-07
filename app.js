@@ -6684,7 +6684,24 @@ if ($brand) {
   });
 }
 
-const ROUTE_KEYS = ["fc", "hours", "tab"];
+const ROUTE_KEYS = ["fc", "window", "tab", "hours"];
+
+const WINDOW_CODES = {
+  24: "24h",
+  48: "48h",
+  72: "72h",
+  168: "7d",
+  336: "2w",
+  720: "1mo",
+  1440: "2mo",
+  2160: "3mo",
+  4380: "6mo",
+};
+
+function windowCode(hours) {
+  const h = parseInt(hours, 10);
+  return WINDOW_CODES[h] || h + "h";
+}
 
 const FC_CODES = {
   kamloops: "KFC",
@@ -6722,10 +6739,10 @@ function routeFromUrl() {
       break;
     }
   }
-  const asked = parseInt(q.get("hours"), 10);
+  const asked = (q.get("window") || "").trim().toLowerCase();
   let hours = null;
   for (const opt of $rangeSelect.options) {
-    if (parseInt(opt.value, 10) === asked) {
+    if (windowCode(opt.value) === asked) {
       hours = opt.value;
       break;
     }
@@ -6740,7 +6757,7 @@ function routeSearch() {
   if (!fc) return "";
   const q = new URLSearchParams();
   q.set("fc", fcCode(fc));
-  q.set("hours", String(parseInt($rangeSelect.value, 10)));
+  q.set("window", windowCode($rangeSelect.value));
   const tab = TABS.find((t) => t.id === state.activeTab);
   if (tab && tab.id !== OVERVIEW_TAB) q.set("tab", tabSlug(tab));
   for (const [key, value] of new URLSearchParams(location.search)) {
