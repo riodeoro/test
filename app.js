@@ -6554,6 +6554,7 @@ function renderTab(tabId) {
   }
 
   state.activeTab = tab.id;
+  writeRoute(false);
   holdPrebuild(PREBUILD_HOLD_MS);
   markTabButtons(tab.id);
 
@@ -6683,24 +6684,45 @@ if ($brand) {
   });
 }
 
+const ROUTE_KEYS = ["fc", "hours", "tab"];
+
+const FC_CODES = {
+  kamloops: "KFC",
+  northwest: "NWFC",
+  coastal: "CoFC",
+  cariboo: "CaFC",
+  southeast: "SEFC",
+  princegeorge: "PGFC",
+  quickdeploy: "QD",
+};
+
+function fcKey(name) {
+  return name.toLowerCase().replace(/fire\s*centre/g, "").replace(/[^a-z0-9]/g, "");
+}
+
+function fcCode(name) {
+  return FC_CODES[fcKey(name)] || safeFc(name);
+}
+
+function tabSlug(tab) {
+  return tab.label.toLowerCase();
+}
+
 function routeFromUrl() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  if (!parts.length) return { empty: true, fc: null, hours: null };
-  let name = parts[0];
-  try {
-    name = decodeURIComponent(name);
-  } catch (e) {
-    void e;
-  }
-  const want = safeFc(name).toLowerCase();
+  const q = new URLSearchParams(location.search);
+  const name = q.get("fc");
+  if (!name) return { empty: true, fc: null, hours: null, tab: OVERVIEW_TAB };
+  const code = name.trim().toLowerCase();
+  const key = fcKey(name);
   let fc = null;
   for (const opt of $fcSelect.options) {
-    if (opt.value && safeFc(opt.value).toLowerCase() === want) {
+    if (!opt.value) continue;
+    if (fcCode(opt.value).toLowerCase() === code || fcKey(opt.value) === key) {
       fc = opt.value;
       break;
     }
   }
-  const asked = parseInt(parts[1], 10);
+  const asked = parseInt(q.get("hours"), 10);
   let hours = null;
   for (const opt of $rangeSelect.options) {
     if (parseInt(opt.value, 10) === asked) {
@@ -6708,23 +6730,34 @@ function routeFromUrl() {
       break;
     }
   }
-  return { empty: false, fc: fc, hours: hours };
+  const slug = (q.get("tab") || "").toLowerCase();
+  const tab = TABS.find((t) => tabSlug(t) === slug);
+  return { empty: false, fc: fc, hours: hours, tab: tab ? tab.id : OVERVIEW_TAB };
 }
 
-function routeHash() {
+function routeSearch() {
   const fc = $fcSelect.value;
   if (!fc) return "";
-  return "#/" + safeFc(fc) + "/" + parseInt($rangeSelect.value, 10);
+  const q = new URLSearchParams();
+  q.set("fc", fcCode(fc));
+  q.set("hours", String(parseInt($rangeSelect.value, 10)));
+  const tab = TABS.find((t) => t.id === state.activeTab);
+  if (tab && tab.id !== OVERVIEW_TAB) q.set("tab", tabSlug(tab));
+  for (const [key, value] of new URLSearchParams(location.search)) {
+    if (!ROUTE_KEYS.includes(key)) q.append(key, value);
+  }
+  return "?" + q.toString();
 }
 
 function writeRoute(replace) {
-  const hash = routeHash();
-  if (!hash || location.hash === hash) return;
+  const search = routeSearch();
+  if (!search || location.search === search) return;
+  const url = location.pathname + search;
   try {
-    if (replace) history.replaceState(null, "", hash);
-    else history.pushState(null, "", hash);
+    if (replace) history.replaceState(null, "", url);
+    else history.pushState(null, "", url);
   } catch (e) {
-    location.hash = hash;
+    void e;
   }
 }
 
@@ -6733,6 +6766,7 @@ function applyRoute() {
   if (route.empty) {
     if (!$fcSelect.value) return;
     $fcSelect.value = "";
+    state.activeTab = OVERVIEW_TAB;
     runAnalysis();
     return;
   }
@@ -6741,8 +6775,13 @@ function applyRoute() {
   const same = $fcSelect.value === route.fc && $rangeSelect.value === hours;
   $fcSelect.value = route.fc;
   $rangeSelect.value = hours;
+  if (same) {
+    renderTab(route.tab);
+    return;
+  }
+  state.activeTab = route.tab;
   writeRoute(true);
-  if (!same) runAnalysis();
+  runAnalysis();
 }
 
 function onSelectionChange() {
@@ -6752,5 +6791,5 @@ function onSelectionChange() {
 
 $fcSelect.addEventListener("change", onSelectionChange);
 $rangeSelect.addEventListener("change", onSelectionChange);
-window.addEventListener("hashchange", applyRoute);
+window.addEventListener("popstate", applyRoute);
 populateDropdown().then(applyRoute);
