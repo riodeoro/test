@@ -6683,6 +6683,74 @@ if ($brand) {
   });
 }
 
-$fcSelect.addEventListener("change", runAnalysis);
-$rangeSelect.addEventListener("change", runAnalysis);
-populateDropdown();
+function routeFromUrl() {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (!parts.length) return { empty: true, fc: null, hours: null };
+  let name = parts[0];
+  try {
+    name = decodeURIComponent(name);
+  } catch (e) {
+    void e;
+  }
+  const want = safeFc(name).toLowerCase();
+  let fc = null;
+  for (const opt of $fcSelect.options) {
+    if (opt.value && safeFc(opt.value).toLowerCase() === want) {
+      fc = opt.value;
+      break;
+    }
+  }
+  const asked = parseInt(parts[1], 10);
+  let hours = null;
+  for (const opt of $rangeSelect.options) {
+    if (parseInt(opt.value, 10) === asked) {
+      hours = opt.value;
+      break;
+    }
+  }
+  return { empty: false, fc: fc, hours: hours };
+}
+
+function routeHash() {
+  const fc = $fcSelect.value;
+  if (!fc) return "";
+  return "#/" + safeFc(fc) + "/" + parseInt($rangeSelect.value, 10);
+}
+
+function writeRoute(replace) {
+  const hash = routeHash();
+  if (!hash || location.hash === hash) return;
+  try {
+    if (replace) history.replaceState(null, "", hash);
+    else history.pushState(null, "", hash);
+  } catch (e) {
+    location.hash = hash;
+  }
+}
+
+function applyRoute() {
+  const route = routeFromUrl();
+  if (route.empty) {
+    if (!$fcSelect.value) return;
+    $fcSelect.value = "";
+    runAnalysis();
+    return;
+  }
+  if (!route.fc) return;
+  const hours = route.hours || $rangeSelect.value;
+  const same = $fcSelect.value === route.fc && $rangeSelect.value === hours;
+  $fcSelect.value = route.fc;
+  $rangeSelect.value = hours;
+  writeRoute(true);
+  if (!same) runAnalysis();
+}
+
+function onSelectionChange() {
+  writeRoute(false);
+  runAnalysis();
+}
+
+$fcSelect.addEventListener("change", onSelectionChange);
+$rangeSelect.addEventListener("change", onSelectionChange);
+window.addEventListener("hashchange", applyRoute);
+populateDropdown().then(applyRoute);
