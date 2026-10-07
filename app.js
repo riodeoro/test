@@ -3980,7 +3980,9 @@ async function collectFindings(fc, hours) {
   ]);
   const out = [];
   const dataRows = [];
+  const missing = new Set();
   texts.forEach((text, i) => {
+    if (text === null || text === undefined) missing.add(INSIGHT_SOURCES[i][2]);
     if (!text) return;
     const palette = colorMap(palettes[i]);
     for (const f of parseFindings(text, INSIGHT_SOURCES[i])) {
@@ -3997,7 +3999,7 @@ async function collectFindings(fc, hours) {
     .sort(dataRowOrder)
     .slice(0, OVERVIEW_DATA_LIMIT)
     .forEach((e) => out.push(e.f));
-  return applySeverity(out);
+  return { findings: applySeverity(out), missing: missing };
 }
 
 const SEVERITY_CATEGORY_STEP = 100;
@@ -4319,6 +4321,19 @@ function ensureOverviewStyles() {
     ".wx-ov-type{font-size:10px;letter-spacing:.03em;color:#a9a49c;}",
     ".wx-ov-detail{font-size:12px;color:var(--text);line-height:1.35;}",
     ".wx-ov-when{font-size:10px;color:var(--text-muted);white-space:nowrap;}",
+    ".wx-ov-sect thead th{height:28px;box-sizing:border-box;padding-top:0;",
+    "padding-bottom:0;z-index:3;}",
+    ".wx-ov-sect .wx-ov-detail{width:100%;}",
+    ".wx-ov-group td{position:sticky;top:28px;z-index:2;padding:6px 12px;",
+    "font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;",
+    "color:var(--text);background:#f3f2ef;border-top:1px solid var(--line);",
+    "border-bottom:1px solid var(--line);}",
+    ".wx-ov-table tbody tr.wx-ov-group:first-child td{border-top:none;}",
+    ".wx-ov-sub td{padding:9px 12px 3px;font-size:10px;font-weight:600;",
+    "letter-spacing:.04em;color:var(--text-muted);border-top:none;}",
+    ".wx-ov-none td{padding:7px 12px 9px;font-size:12px;color:#a9a49c;",
+    "border-top:none;}",
+    ".wx-ov-group + tr td,.wx-ov-sub + tr td{border-top:none;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
@@ -4337,7 +4352,7 @@ const EXTREME_SECTION = "EXTREME VALUES";
 
 const EXTREME_PREFIX_RE = /^(Highest|Lowest)\b/;
 
-const OVERVIEW_COLUMNS = ["Sensor", "Station", "Alert", "Type", "Time"];
+const SENSOR_COLUMNS = ["Station", "Alert", "Time"];
 
 const TAB_COLUMNS = ["Station", "Alert", "Type", "Time"];
 
@@ -4367,6 +4382,21 @@ const OVERVIEW_BLANK = {
 };
 
 const AREA_RANK = new Map(INSIGHT_SOURCES.map((s, i) => [s[2], i]));
+
+const AREA_ORDER = INSIGHT_SOURCES.map((s) => s[2]);
+
+const SENSOR_EMPTY_TEXT = "No alerts";
+
+const SENSOR_EMPTY_DATA_TEXT = "No missing data";
+
+const SENSOR_MISSING_TEXT = "Not available";
+
+const SENSOR_SORTS = {
+  Station: (a, b) =>
+    String(a.station || "").localeCompare(String(b.station || "")),
+  Alert: (a, b) => ovDetail(a).localeCompare(ovDetail(b)),
+  Time: (a, b) => ovStamp(a) - ovStamp(b),
+};
 
 function ovAreaRank(f) {
   const i = AREA_RANK.get(f.area);
@@ -4473,9 +4503,13 @@ function revealRow(row) {
   const wrap = row.closest ? row.closest(".wx-ov-wrap") : null;
   if (!wrap) return;
   const head = wrap.querySelector("thead");
+  const group = wrap.querySelector(".wx-ov-group");
   const box = wrap.getBoundingClientRect();
   const seen = row.getBoundingClientRect();
-  const top = box.top + (head ? head.getBoundingClientRect().height : 0);
+  const top =
+    box.top +
+    (head ? head.getBoundingClientRect().height : 0) +
+    (group ? group.getBoundingClientRect().height : 0);
   if (seen.top < top) wrap.scrollTop -= top - seen.top;
   else if (seen.bottom > box.bottom) wrap.scrollTop += seen.bottom - box.bottom;
 }
@@ -5137,6 +5171,138 @@ function overviewTable(findings, panel, columns, onPick) {
   return wrap;
 }
 
+function sensorRowOrder(column, dir) {
+  const cmp = dir ? SENSOR_SORTS[column] : null;
+  const blank = dir ? OVERVIEW_BLANK[column] : null;
+  return (a, b) => {
+    if (cmp) {
+      if (blank) {
+        const ab = blank(a.f);
+        const bb = blank(b.f);
+        if (ab !== bb) return ab ? 1 : -1;
+      }
+      return dir * cmp(a.f, b.f) || a.i - b.i;
+    }
+    if (a.f.area === DATA_AREA) return dataRowOrder(a, b);
+    return ovSeverity(b.f) - ovSeverity(a.f) || a.i - b.i;
+  };
+}
+
+function sensorSections(entries, column, dir) {
+  const order = sensorRowOrder(column, dir);
+  const out = [];
+  for (const area of AREA_ORDER) {
+    const groups = new Map();
+    for (const e of entries) {
+      if (e.f.area !== area) continue;
+      const key = String(e.f.section || "");
+      let g = groups.get(key);
+      if (!g) {
+        g = { section: key, top: -Infinity, rows: [] };
+        groups.set(key, g);
+      }
+      g.rows.push(e);
+      g.top = Math.max(g.top, ovSeverity(e.f));
+    }
+    const types = Array.from(groups.values()).sort((a, b) => {
+      if (!a.section || !b.section) {
+        if (a.section === b.section) return 0;
+        return a.section ? -1 : 1;
+      }
+      return b.top - a.top || a.section.localeCompare(b.section);
+    });
+    for (const g of types) g.rows.sort(order);
+    out.push({ area: area, types: types });
+  }
+  return out;
+}
+
+function sensorEmptyText(area, missing) {
+  if (missing && missing.has(area)) return SENSOR_MISSING_TEXT;
+  return area === DATA_AREA ? SENSOR_EMPTY_DATA_TEXT : SENSOR_EMPTY_TEXT;
+}
+
+function spanRow(className, text, span) {
+  const row = el("tr", className);
+  const cell = ovText("td", null, text);
+  cell.colSpan = span;
+  row.appendChild(cell);
+  return row;
+}
+
+function sensorTable(findings, panel, missing) {
+  const columns = SENSOR_COLUMNS;
+  const wrap = el("div", "wx-ov-wrap");
+  const table = el("table", "wx-ov-table wx-ov-sect");
+  const thead = el("thead");
+  const headRow = el("tr");
+  const tbody = el("tbody");
+
+  const entries = findings.map((f, i) => ({
+    f: f,
+    i: i,
+    row: overviewRow(f, panel, columns, null),
+  }));
+
+  let column = null;
+  let dir = 0;
+  const cells = new Map();
+
+  const apply = () => {
+    for (const [name, cell] of cells) {
+      const mark = cell.querySelector(".a");
+      if (mark) mark.remove();
+      if (name !== column || !dir) continue;
+      const arrow = el("span", "a");
+      arrow.textContent = dir < 0 ? "↓" : "↑";
+      cell.appendChild(arrow);
+    }
+    const nodes = [];
+    for (const group of sensorSections(entries, column, dir)) {
+      nodes.push(spanRow("wx-ov-group", group.area, columns.length));
+      if (!group.types.length) {
+        nodes.push(
+          spanRow("wx-ov-none", sensorEmptyText(group.area, missing), columns.length)
+        );
+        continue;
+      }
+      for (const type of group.types) {
+        if (type.section) {
+          nodes.push(spanRow("wx-ov-sub", type.section, columns.length));
+        }
+        for (const e of type.rows) nodes.push(e.row);
+      }
+    }
+    tbody.replaceChildren(...nodes);
+    wrap.scrollTop = 0;
+  };
+
+  for (const label of columns) {
+    const cell = ovText("th", null, label);
+    cells.set(label, cell);
+    cell.addEventListener("click", () => {
+      if (column !== label) {
+        column = label;
+        dir = 1;
+      } else if (dir === 1) {
+        dir = -1;
+      } else {
+        column = null;
+        dir = 0;
+      }
+      apply();
+    });
+    headRow.appendChild(cell);
+  }
+
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  apply();
+  return wrap;
+}
+
 const OVERVIEW_SHELL_GAP = 8;
 
 function overviewReserve(shell) {
@@ -5193,11 +5359,15 @@ async function buildOverview(fc, hours) {
   const box = el("div");
 
   let findings = [];
+  let missing = new Set();
   try {
-    findings = await collectFindings(fc, hours);
+    const found = await collectFindings(fc, hours);
+    findings = found.findings;
+    missing = found.missing;
   } catch (e) {
     console.warn("overview failed", e);
     findings = [];
+    missing = new Set();
   }
 
   if (!findings.length) {
@@ -5210,7 +5380,7 @@ async function buildOverview(fc, hours) {
   const shell = el("div", "wx-ov-shell");
   const panel = chartPanel();
   shell.appendChild(panel);
-  shell.appendChild(overviewTable(findings, panel, OVERVIEW_COLUMNS));
+  shell.appendChild(sensorTable(findings, panel, missing));
   box.appendChild(shell);
   requestAnimationFrame(sizeOverviewShell);
 
