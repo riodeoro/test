@@ -4029,7 +4029,6 @@ const SEVERITY_AREA_DEFAULT_RANK = {
 
 const SEV_RE = {
   readings: /^(\d+)\s+reading/i,
-  events: /^(\d+)\s+event/i,
   shifts: /^(\d+)\s+shift/i,
   hours: /^(\d+)\s+hour/i,
   uncorrelated: /^(\d+)\s+uncorrelated/i,
@@ -4094,12 +4093,8 @@ const SEVERITY_CATEGORIES = [
     noOngoing: true,
     noSpan: true,
   }],
-  ["RH", "RH CHANGED \u226520%/H, DECOUPLED FROM TEMPERATURE AND WIND", 11, {
+  ["RH", "RH CHANGED >50%/H, OR \u226520%/H DECOUPLED FROM TEMPERATURE AND WIND", 11, {
     freq: { re: SEV_RE.shifts },
-    mag: { re: SEV_RE.rhPeak, abs: true },
-  }],
-  ["RH", "RH CHANGED >50%/H", 12, {
-    freq: { re: SEV_RE.events },
     mag: { re: SEV_RE.rhPeak, abs: true },
   }],
   ["Temp", "TEMPERATURE CHANGED >5\u00b0C/H, UNCORRELATED WITH RH", 13, {
