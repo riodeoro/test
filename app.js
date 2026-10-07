@@ -4324,7 +4324,8 @@ function ensureOverviewStyles() {
     ".wx-ov-sect thead th{height:28px;box-sizing:border-box;padding-top:0;",
     "padding-bottom:0;z-index:3;}",
     ".wx-ov-sect .wx-ov-detail{width:100%;}",
-    ".wx-ov-group td{position:sticky;top:28px;z-index:2;padding:6px 12px;",
+    ".wx-ov-sect .wx-ov-group td{position:sticky;top:28px;z-index:2;",
+    "padding-top:3px;padding-bottom:3px;line-height:1.3;",
     "font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;",
     "color:var(--text);background:#f3f2ef;border-top:1px solid var(--line);",
     "border-bottom:1px solid var(--line);}",
@@ -4365,6 +4366,10 @@ const OVERVIEW_CELLS = {
 };
 
 const OVERVIEW_PLOT_MAX = 420;
+
+const OVERVIEW_PLOT_MIN = 220;
+
+const OVERVIEW_PLOT_SHARE = 0.5;
 
 
 const PANEL_CHROME = 96;
@@ -4473,7 +4478,10 @@ function overviewPlotCap(panel) {
   }
   const room = shell.clientHeight;
   if (!room) return OVERVIEW_PLOT_MAX;
-  return Math.max(220, Math.min(OVERVIEW_PLOT_MAX, Math.round(room * 0.55)));
+  return Math.max(
+    OVERVIEW_PLOT_MIN,
+    Math.min(OVERVIEW_PLOT_MAX, Math.round(room * OVERVIEW_PLOT_SHARE))
+  );
 }
 
 const PANEL_MARGIN = 12;
@@ -4555,6 +4563,20 @@ function toggleOverviewChart(panel, f, row) {
   openOverviewChart(panel, f, row);
 }
 
+function foldDetailHead(panel) {
+  if (isMobile()) return;
+  const head = panel.querySelector(".wx-detail-head");
+  const controls = panel.querySelector(".wx-detail-controls");
+  if (!head || !controls || head.parentNode !== panel) return;
+  const title = head.querySelector(".t");
+  const close = head.querySelector("button");
+  if (!title || !close) return;
+  close.classList.add("wx-detail-close");
+  controls.insertBefore(title, controls.firstChild);
+  controls.appendChild(close);
+  panel.removeChild(head);
+}
+
 function openOverviewChart(panel, f, row) {
   ensureOverviewStyles();
   ensureDetailStyles();
@@ -4612,6 +4634,7 @@ function openOverviewChart(panel, f, row) {
   detailModule()
     .then((m) => m.mount(panel, opts))
     .then(() => {
+      if (panel._wxStation === (f.station || null)) foldDetailHead(panel);
       wirePanelHover(panel);
       const grid = panel._wxGrid;
       if (grid) {
@@ -5642,6 +5665,12 @@ function ensureDetailStyles() {
     ".wx-detail-head button{flex:0 0 auto;font-size:12px;padding:4px 11px;}",
     ".wx-detail-body{min-height:0;}",
     ".wx-detail-controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:4px;}",
+    ".wx-detail-controls > .t{align-self:flex-end;flex:0 1 auto;min-width:0;",
+    "max-width:260px;margin-right:6px;font-size:13px;font-weight:600;",
+    "letter-spacing:-.015em;line-height:28px;overflow:hidden;",
+    "text-overflow:ellipsis;white-space:nowrap;}",
+    ".wx-detail-controls > .wx-detail-close{align-self:flex-end;flex:0 0 auto;",
+    "margin-left:auto;font-size:12px;padding:4px 11px;min-height:28px;}",
     ".wx-detail-control{display:flex;flex-direction:column;gap:2px;min-width:150px;}",
     ".wx-detail-control label{font-size:9px;letter-spacing:.06em;}",
     ".wx-detail-select{font-family:inherit;font-size:12px;font-weight:500;",
