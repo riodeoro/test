@@ -33,6 +33,8 @@ const ATTR_TAB = {
 
 const DIR_CONC_RE = /^Direction concentration/;
 
+const SOIL_COLS = new Set(["SM1", "SM2", "SM3", "ST1", "ST2", "ST3"]);
+
 const PLOT_PREF = {
   "tab-rh": ["Rh", "Temp"],
   "tab-wind": ["Wspd", "Mx_Spd"],
@@ -422,6 +424,15 @@ async function openSource(station, years) {
   throw err;
 }
 
+function hasReadings(series, col) {
+  const v = series && series[col];
+  if (!v) return false;
+  for (let i = 0; i < series.n; i++) {
+    if (Number.isFinite(v[i])) return true;
+  }
+  return false;
+}
+
 function load(opts) {
   const key = [opts.station, opts.fc, opts.hours].join("|");
 
@@ -449,7 +460,15 @@ function load(opts) {
       err.code = "NO_ROWS";
       throw err;
     }
-    return { series, name, startMs, endMs, cols: want };
+    const cols = want.filter(
+      (c) => !SOIL_COLS.has(c) || hasReadings(series, c)
+    );
+    if (!cols.length) {
+      const err = new Error("no sensor columns");
+      err.code = "NO_COLUMNS";
+      throw err;
+    }
+    return { series, name, startMs, endMs, cols };
   })();
 
   p.catch(() => {
