@@ -335,7 +335,7 @@ function pairs(a, b) {
   return out;
 }
 
-const PAIR = "%{customdata[0]:.1f} \u2013 %{customdata[1]:.1f}<extra></extra>";
+const PAIR = "%{customdata[0]:.1f} - %{customdata[1]:.1f}<extra></extra>";
 
 function bandTraces(band, yaxis, col) {
   const x = band.x.map(isoStamp);
@@ -344,8 +344,8 @@ function bandTraces(band, yaxis, col) {
   for (const edge of EDGES) ys[edge] = band[edge].map(fmt);
   const hover = {
     p90: { customdata: pairs(ys.lo, ys.hi), hovertemplate: "Range: " + PAIR },
-    p75: { customdata: pairs(ys.p10, ys.p90), hovertemplate: "P10\u2013P90: " + PAIR },
-    p50: { customdata: pairs(ys.p25, ys.p75), hovertemplate: "P25\u2013P75: " + PAIR },
+    p75: { customdata: pairs(ys.p10, ys.p90), hovertemplate: "P10-P90: " + PAIR },
+    p50: { customdata: pairs(ys.p25, ys.p75), hovertemplate: "P25-P75: " + PAIR },
     p25: {
       customdata: ys.p50,
       hovertemplate: "Median: %{customdata:.1f}<extra></extra>",
