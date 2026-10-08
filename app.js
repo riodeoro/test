@@ -4591,18 +4591,15 @@ function toggleOverviewChart(panel, f, row) {
   openOverviewChart(panel, f, row);
 }
 
-function foldDetailHead(panel) {
-  if (isMobile()) return;
-  const head = panel.querySelector(".wx-detail-head");
-  const controls = panel.querySelector(".wx-detail-controls");
-  if (!head || !controls || head.parentNode !== panel) return;
-  const title = head.querySelector(".t");
-  const close = head.querySelector("button");
-  if (!title || !close) return;
-  close.classList.add("wx-detail-close");
-  controls.insertBefore(title, controls.firstChild);
-  controls.appendChild(close);
-  panel.removeChild(head);
+function detailSpacer() {
+  const wrap = el("div", "wx-detail-control wx-detail-spacer");
+  wrap.setAttribute("aria-hidden", "true");
+  wrap.appendChild(el("label", null, "\u00a0"));
+  const sel = document.createElement("select");
+  sel.className = "wx-detail-select";
+  sel.tabIndex = -1;
+  wrap.appendChild(sel);
+  return wrap;
 }
 
 function openOverviewChart(panel, f, row) {
@@ -4620,23 +4617,26 @@ function openOverviewChart(panel, f, row) {
     panel.style.height = "";
   }
 
-  const head = el("div", "wx-detail-head");
+  const fold = f.tab !== DATA_TAB && !isMobile();
+  const head = el("div", fold ? "wx-detail-head wx-detail-controls" : "wx-detail-head");
   const title = el("span", "t");
   title.textContent = f.station;
-  const close = el("button", null, "Close");
+  const close = el("button", fold ? "wx-detail-close" : null, "Close");
   close.type = "button";
   close.addEventListener("click", () => closeOverviewChart(panel));
   head.appendChild(title);
+  if (fold) head.appendChild(detailSpacer());
   head.appendChild(close);
 
   const body = el("div", "wx-detail-body");
-  const loading = el("div", "al-loading");
+  const loading = el("div", fold ? "al-loading wx-detail-hold" : "al-loading");
   loading.appendChild(el("div", "spinner"));
   loading.appendChild(el("span", null, "Loading\u2026"));
   body.appendChild(loading);
 
   panel.appendChild(head);
   panel.appendChild(body);
+  if (fold) loading.style.height = overviewPlotCap(panel) + "px";
   if (row) {
     watchRowVisible(panel, row);
     requestAnimationFrame(() => {
@@ -4659,10 +4659,15 @@ function openOverviewChart(panel, f, row) {
     const grid = panel._wxGrid;
     if (grid && typeof grid._wxRefit === "function") grid._wxRefit();
   };
+  opts.foldHead = fold;
   detailModule()
-    .then((m) => m.mount(panel, opts))
+    .then((m) => {
+      if (fold && loading.isConnected && typeof m.plotHeight === "function") {
+        loading.style.height = m.plotHeight(opts.maxHeight) + "px";
+      }
+      return m.mount(panel, opts);
+    })
     .then(() => {
-      if (panel._wxStation === (f.station || null)) foldDetailHead(panel);
       wirePanelHover(panel);
       const grid = panel._wxGrid;
       if (grid) {
@@ -5703,6 +5708,9 @@ function ensureDetailStyles() {
     "max-width:260px;margin-right:6px;font-size:13px;font-weight:600;",
     "letter-spacing:-.015em;line-height:28px;overflow:hidden;",
     "text-overflow:ellipsis;white-space:nowrap;}",
+    ".wx-detail-spacer{visibility:hidden;flex:0 0 0;width:0;min-width:0;",
+    "overflow:hidden;}",
+    ".al-loading.wx-detail-hold{padding:0;box-sizing:border-box;}",
     ".wx-detail-controls > .wx-detail-close{align-self:flex-end;flex:0 0 auto;",
     "margin-left:auto;font-size:12px;padding:4px 11px;min-height:28px;}",
     ".wx-detail-control{display:flex;flex-direction:column;gap:2px;min-width:150px;}",
