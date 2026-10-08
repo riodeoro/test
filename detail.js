@@ -44,7 +44,6 @@ const PLOT_PREF = {
 };
 
 const SERIES_CACHE_MAX = 8;
-const ALERT_CACHE_MAX = 24;
 
 const PLOT_CONFIG = {
   responsive: true,
@@ -291,7 +290,7 @@ function extractAlerts(fig, station) {
   return { points, bands };
 }
 
-const _alertCache = new Map();
+let _alertCache = new WeakMap();
 
 function lruGet(map, key) {
   if (!map.has(key)) return null;
@@ -321,23 +320,29 @@ function ownedAlerts(col, a) {
   return a;
 }
 
+function chartAlerts(chart, station) {
+  if (!chart || typeof chart !== "object" || !chart.station_grid) return null;
+  let byStation = _alertCache.get(chart);
+  if (!byStation) {
+    byStation = new Map();
+    _alertCache.set(chart, byStation);
+  }
+  if (!byStation.has(station)) {
+    byStation.set(station, extractAlerts(chart.station_grid, station));
+  }
+  return byStation.get(station);
+}
+
 function alertsFor(opts, col) {
   const suffix = ATTR_TAB[col] || null;
   if (!suffix || typeof opts.getChart !== "function") {
     return Promise.resolve(null);
   }
-  const key = [opts.fc, opts.hours, suffix, opts.station].join("|");
-  let p = lruGet(_alertCache, key);
-  if (!p) {
-    p = Promise.resolve()
-      .then(() => opts.getChart(suffix))
-      .then((c) =>
-        c && c.station_grid ? extractAlerts(c.station_grid, opts.station) : null
-      )
-      .catch(() => null);
-    lruSet(_alertCache, key, p, ALERT_CACHE_MAX);
-  }
-  return p.then((a) => ownedAlerts(col, a));
+  return Promise.resolve()
+    .then(() => opts.getChart(suffix))
+    .then((c) => chartAlerts(c, opts.station))
+    .catch(() => null)
+    .then((a) => ownedAlerts(col, a));
 }
 
 function primeAlerts(opts) {
@@ -433,14 +438,14 @@ function hasReadings(series, col) {
   return false;
 }
 
-function load(opts) {
-  const key = [opts.station, opts.fc, opts.hours].join("|");
+async function load(opts) {
+  const [startMs, endMs] = await windowBounds(opts);
+  const key = [opts.station, opts.fc, opts.hours, startMs, endMs].join("|");
 
   const hit = lruGet(_seriesCache, key);
   if (hit) return hit;
 
   const p = (async () => {
-    const [startMs, endMs] = await windowBounds(opts);
     const years = yearsFor(startMs, endMs);
     const { source, name } = await openSource(opts.station, years);
 
@@ -1219,5 +1224,5 @@ export async function mount(host, opts) {
 
 export function clearCache() {
   _seriesCache.clear();
-  _alertCache.clear();
+  _alertCache = new WeakMap();
 }
