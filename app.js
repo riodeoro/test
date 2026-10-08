@@ -4337,7 +4337,8 @@ function ensureOverviewStyles() {
     "font-size:10px;font-weight:500;letter-spacing:.04em;",
     "color:var(--text-muted);background:#fafaf9;}",
     ".wx-ov-sect .wx-ov-none td{padding-top:5px;padding-bottom:5px;",
-    "font-size:12px;color:#a9a49c;}",
+    "font-size:10px;font-weight:500;letter-spacing:.04em;",
+    "text-transform:uppercase;color:#a9a49c;}",
     "@media (max-width:768px){.wx-ov-chart{padding:8px;}",
     ".wx-ov-table th,.wx-ov-table td{padding:5px 8px;}}",
   ].join("");
@@ -4394,8 +4395,6 @@ const AREA_RANK = new Map(INSIGHT_SOURCES.map((s, i) => [s[2], i]));
 const AREA_ORDER = INSIGHT_SOURCES.map((s) => s[2]);
 
 const SENSOR_EMPTY_TEXT = "No alerts";
-
-const SENSOR_EMPTY_DATA_TEXT = "No missing data";
 
 const SENSOR_MISSING_TEXT = "Not available";
 
@@ -5245,7 +5244,7 @@ function sensorSections(entries, column, dir) {
 
 function sensorEmptyText(area, missing) {
   if (missing && missing.has(area)) return SENSOR_MISSING_TEXT;
-  return area === DATA_AREA ? SENSOR_EMPTY_DATA_TEXT : SENSOR_EMPTY_TEXT;
+  return SENSOR_EMPTY_TEXT;
 }
 
 function spanRow(className, text, span) {
