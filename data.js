@@ -163,6 +163,8 @@ async function exists(url) {
 }
 
 const _localFiles = new Map();
+const _localStamps = new Map();
+const _localJobs = new Map();
 let _localSeq = 0;
 
 async function evictLocalFiles() {
@@ -170,6 +172,7 @@ async function evictLocalFiles() {
     const oldest = _localFiles.keys().next().value;
     const name = _localFiles.get(oldest);
     _localFiles.delete(oldest);
+    _localStamps.delete(oldest);
     forgetSourcesUsing(name);
     await dropFile(name);
   }
@@ -180,41 +183,86 @@ export async function resetEngine() {
   _sourceFiles.clear();
   _tables.clear();
   _localFiles.clear();
+  _localStamps.clear();
   await resetDb();
 }
 
 export async function dropLocalFiles() {
   const names = Array.from(_localFiles.values());
   _localFiles.clear();
+  _localStamps.clear();
   for (const n of names) forgetSourcesUsing(n);
   for (const n of names) await dropFile(n);
 }
 
-async function localize(urls) {
-  return mapLimit(urls, LOCALIZE_CONCURRENCY, async (u) => {
-    const hit = _localFiles.get(u);
-    if (hit) {
+function localStamp(res, size) {
+  const tag = res.headers.get("ETag");
+  const modified = res.headers.get("Last-Modified");
+  if (!tag && !modified) return null;
+  return [tag || "", modified || "", size].join("|");
+}
+
+async function pullLocal(u) {
+  try {
+    const res = await fetch(u, { credentials: "omit", cache: "no-cache" });
+    if (!res.ok) return _localFiles.get(u) || u;
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const held = _localFiles.get(u);
+    if (buf.byteLength > LOCALIZE_BYTES_MAX) {
       _localFiles.delete(u);
-      _localFiles.set(u, hit);
-      return hit;
-    }
-    const known = _sizeCache.get(u);
-    if (known !== undefined && known > LOCALIZE_BYTES_MAX) return u;
-    try {
-      const res = await fetch(u, { credentials: "omit" });
-      if (!res.ok) return u;
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.byteLength > LOCALIZE_BYTES_MAX) return u;
-      const name = `wx_${++_localSeq}.parquet`;
-      await registerFile(name, buf);
-      _localFiles.set(u, name);
-      await evictLocalFiles();
-      return name;
-    } catch (e) {
-      void e;
+      _localStamps.delete(u);
+      if (held) {
+        forgetSourcesUsing(held);
+        await dropFile(held);
+      }
       return u;
     }
+    const stamp = localStamp(res, buf.byteLength);
+    if (held && stamp !== null && _localStamps.get(u) === stamp) {
+      _localFiles.delete(u);
+      _localFiles.set(u, held);
+      return held;
+    }
+    const name = `wx_${++_localSeq}.parquet`;
+    await registerFile(name, buf);
+    const old = _localFiles.get(u);
+    _localFiles.delete(u);
+    _localFiles.set(u, name);
+    _localStamps.set(u, stamp);
+    if (old) {
+      forgetSourcesUsing(old);
+      await dropFile(old);
+    }
+    await evictLocalFiles();
+    return name;
+  } catch (e) {
+    void e;
+    return _localFiles.get(u) || u;
+  }
+}
+
+function localizeOne(u, fresh) {
+  const hit = _localFiles.get(u);
+  if (hit && !fresh) {
+    _localFiles.delete(u);
+    _localFiles.set(u, hit);
+    return Promise.resolve(hit);
+  }
+  const running = _localJobs.get(u);
+  if (running) return running;
+  const known = _sizeCache.get(u);
+  if (!hit && known !== undefined && known > LOCALIZE_BYTES_MAX) {
+    return Promise.resolve(u);
+  }
+  const job = pullLocal(u).finally(() => {
+    if (_localJobs.get(u) === job) _localJobs.delete(u);
   });
+  _localJobs.set(u, job);
+  return job;
+}
+
+async function localize(urls, fresh) {
+  return mapLimit(urls, LOCALIZE_CONCURRENCY, (u) => localizeOne(u, !!fresh));
 }
 
 async function retry(fn, attempts, waitMs) {
@@ -664,6 +712,7 @@ export async function stationSource(station, years, stations) {
   if (!list.length) return null;
   const urls = await stationUrlsFor([station], years);
   if (!urls.length) return null;
+  await localize(urls, true);
   return buildSource(urls, list, false);
 }
 
