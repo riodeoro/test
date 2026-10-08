@@ -552,6 +552,13 @@ function detailHeight(modal, plot) {
   return Math.round(Math.max(320, Math.min(760, avail)));
 }
 
+export function plotHeight(maxHeight) {
+  const h = detailHeight(null, null);
+  const v = typeof maxHeight === "function" ? maxHeight() : maxHeight;
+  const cap = Number(v) || 0;
+  return cap ? Math.min(h, cap) : h;
+}
+
 function focusWindow(fig, startMs, endMs, view) {
   const ax = fig.layout && fig.layout.xaxis;
   if (!ax) return fig;
@@ -807,6 +814,17 @@ export async function mount(host, opts) {
   normalsWrap.appendChild(normalsRow);
   controls.appendChild(normalsWrap);
 
+  if (opts.foldHead && title) {
+    const head = title.closest(".wx-detail-head");
+    const close = head ? head.querySelector("button") : null;
+    if (head && close && head.parentNode === host) {
+      close.classList.add("wx-detail-close");
+      controls.insertBefore(title, controls.firstChild);
+      controls.appendChild(close);
+      head.remove();
+    }
+  }
+
   let normals = null;
   let pickYear = null;
   let yearSeries = null;
@@ -872,6 +890,7 @@ export async function mount(host, opts) {
     const cap = capHeight();
     return cap ? Math.min(h, cap) : h;
   };
+  plot.style.minHeight = heightFor() + "px";
 
   let alertsPrimary = null;
   let alertsSecondary = null;
@@ -940,6 +959,7 @@ export async function mount(host, opts) {
   };
 
   const wire = () => {
+    plot.style.minHeight = "";
     if (wired || typeof plot.on !== "function") return;
     wired = true;
     plot.on("plotly_legendclick", toggleAlerts);
