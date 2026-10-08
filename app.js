@@ -1750,7 +1750,9 @@ function graph(figDict, opts = {}) {
   };
 
   if (!figDict) {
-    wrap.appendChild(el("div", "unavailable", "Chart data unavailable."));
+    ensureEmptyStyles();
+    plotDiv.classList.add("wx-plot-empty");
+    plotDiv.appendChild(el("div", "unavailable", "Chart data unavailable."));
     return wrap;
   }
 
@@ -1883,6 +1885,8 @@ function graph(figDict, opts = {}) {
       draw();
     } catch (e) {
       clearWait();
+      ensureEmptyStyles();
+      plotDiv.classList.add("wx-plot-empty");
       plotDiv.appendChild(el("div", "unavailable", "Chart failed to render."));
     }
   });
@@ -2262,8 +2266,24 @@ function rowGraph(fig, opts) {
   return graph(fig, o);
 }
 
+function ensureEmptyStyles() {
+  if (document.getElementById("wx-empty-styles")) return;
+  const st = document.createElement("style");
+  st.id = "wx-empty-styles";
+  st.textContent = [
+    ".wx-plot-empty{display:flex;align-items:center;justify-content:center;",
+    "min-height:120px;box-sizing:border-box;}",
+    ".wx-plot-empty > .unavailable{padding:0;font-size:12px;color:#94a3b8;",
+    "text-align:center;}",
+  ].join("");
+  document.head.appendChild(st);
+}
+
 function unavailable() {
-  return el("div", "unavailable", "Chart data unavailable.");
+  ensureEmptyStyles();
+  const box = el("div", "wx-card wx-plot-empty");
+  box.appendChild(el("div", "unavailable", "Chart data unavailable."));
+  return box;
 }
 
 function stripTitle(figDict) {
@@ -2598,7 +2618,7 @@ function ensureInsightStyles() {
   st.textContent = [
     ".wx-insight-shell{position:relative;margin-bottom:16px;}",
     ".wx-insight-shell > .wx-ov-wrap{max-height:180px;}",
-    ".wx-insight-shell > .wx-expand-btn{right:16px;background:var(--surface,#fff);",
+    ".wx-insight-shell > .wx-expand-btn{top:1px;right:4px;background:var(--surface,#fff);",
     "border-color:var(--line,#e8e6e3);}",
     ".wx-stn-link{cursor:pointer;border-bottom:1px dotted currentColor;}",
     ".wx-stn-link.wx-stn-hot{background:#dbeafe;}",
@@ -3786,8 +3806,14 @@ async function insightBanner(fc, hours, tab, panel, onPick) {
   const findings = tab === DATA_SUFFIX
     ? parsed.filter((f) => isDataSection(f.section) || f.section === UNCONFIGURED_SECTION)
     : parsed;
+  ensureOverviewStyles();
+  ensureInsightStyles();
+
+  const shell = el("div", "wx-insight-shell");
   if (!findings.length) {
-    return el("div", "insight-empty", "No alerts");
+    const missing = text === null || text === undefined;
+    shell.appendChild(emptyTable(missing ? SENSOR_MISSING_TEXT : SENSOR_EMPTY_TEXT));
+    return shell;
   }
 
   const colors = colorMap(palette);
@@ -3796,11 +3822,11 @@ async function insightBanner(fc, hours, tab, panel, onPick) {
   }
   applySeverity(findings);
 
-  ensureOverviewStyles();
-  ensureInsightStyles();
-
-  const shell = el("div", "wx-insight-shell");
-  const wrap = overviewTable(findings, panel, TAB_COLUMNS, onPick);
+  const wrap = sensorTable(findings, panel, null, {
+    areas: source ? [source[2]] : AREA_ORDER,
+    headers: false,
+    onPick: onPick,
+  });
   shell.appendChild(wrap);
   makeBoxExpandable(shell, wrap);
   return shell;
@@ -5213,10 +5239,10 @@ function sensorRowOrder(column, dir) {
   };
 }
 
-function sensorSections(entries, column, dir) {
+function sensorSections(entries, column, dir, areas) {
   const order = sensorRowOrder(column, dir);
   const out = [];
-  for (const area of AREA_ORDER) {
+  for (const area of areas || AREA_ORDER) {
     const groups = new Map();
     for (const e of entries) {
       if (e.f.area !== area) continue;
@@ -5255,8 +5281,11 @@ function spanRow(className, text, span) {
   return row;
 }
 
-function sensorTable(findings, panel, missing) {
+function sensorTable(findings, panel, missing, opts) {
   const columns = SENSOR_COLUMNS;
+  const areas = (opts && opts.areas) || AREA_ORDER;
+  const headers = !(opts && opts.headers === false);
+  const onPick = (opts && opts.onPick) || null;
   const wrap = el("div", "wx-ov-wrap");
   const table = el("table", "wx-ov-table wx-ov-sect");
   const thead = el("thead");
@@ -5266,7 +5295,7 @@ function sensorTable(findings, panel, missing) {
   const entries = findings.map((f, i) => ({
     f: f,
     i: i,
-    row: overviewRow(f, panel, columns, null),
+    row: overviewRow(f, panel, columns, onPick),
   }));
 
   let column = null;
@@ -5283,8 +5312,8 @@ function sensorTable(findings, panel, missing) {
       cell.appendChild(arrow);
     }
     const nodes = [];
-    for (const group of sensorSections(entries, column, dir)) {
-      nodes.push(spanRow("wx-ov-group", group.area, columns.length));
+    for (const group of sensorSections(entries, column, dir, areas)) {
+      if (headers) nodes.push(spanRow("wx-ov-group", group.area, columns.length));
       if (!group.types.length) {
         nodes.push(
           spanRow("wx-ov-none", sensorEmptyText(group.area, missing), columns.length)
@@ -5325,6 +5354,16 @@ function sensorTable(findings, panel, missing) {
   table.appendChild(tbody);
   wrap.appendChild(table);
   apply();
+  return wrap;
+}
+
+function emptyTable(text) {
+  const wrap = el("div", "wx-ov-wrap");
+  const table = el("table", "wx-ov-table wx-ov-sect");
+  const tbody = el("tbody");
+  tbody.appendChild(spanRow("wx-ov-none", text, 1));
+  table.appendChild(tbody);
+  wrap.appendChild(table);
   return wrap;
 }
 
@@ -5392,14 +5431,7 @@ async function buildOverview(fc, hours) {
   } catch (e) {
     console.warn("overview failed", e);
     findings = [];
-    missing = new Set();
-  }
-
-  if (!findings.length) {
-    box.appendChild(
-      el("div", "insight-empty", "No findings for this fire centre in this window.")
-    );
-    return box;
+    missing = new Set(AREA_ORDER);
   }
 
   const shell = el("div", "wx-ov-shell");
